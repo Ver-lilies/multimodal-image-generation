@@ -1,4 +1,5 @@
 import os
+import sys
 import torch
 import base64
 import io
@@ -6,6 +7,8 @@ import numpy as np
 from PIL import Image
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi import Response
 from pydantic import BaseModel
 import uvicorn
 import threading
@@ -15,6 +18,13 @@ try:
     load_dotenv()
 except ImportError:
     pass
+
+# Windows 默认控制台常为 GBK，emoji 会导致 UnicodeEncodeError，进程在绑定端口前退出
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 HF_TOKEN = os.getenv('HF_TOKEN', '')
 DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY', '')
@@ -242,7 +252,14 @@ def get_controlnet():
 
 @app.get("/")
 def root():
+    index_path = os.path.join(os.path.dirname(__file__), "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
     return {"message": "Multimodal API is running", "status": "ok"}
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return Response(status_code=204)
 
 @app.get("/status")
 def status():

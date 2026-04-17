@@ -10,7 +10,9 @@ dist/
 build/
 .env
 .venv
+.venv*/
 venv/
+.env.bak
 node_modules/
 .DS_Store
 *.log

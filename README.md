@@ -1,27 +1,33 @@
 # 多模态图像生成系统
 
-一个基于AI的图像生成系统，支持文本生成图像、提示词增强优化、CLIP语义相似度评估和BLIP图像描述。
+一个基于 AI 的图像生成系统，支持文本生成图像、提示词增强优化、CLIP 语义相似度评估和 BLIP 图像描述。
+
+**文档与仓库当前行为对齐说明（本版 README 更新于 2026-04）：** 启动前必须通过环境变量提供 `HF_TOKEN` 与 `DEEPSEEK_API_KEY`（推荐使用项目根目录 `.env`）；可选 `LOCAL_FILES_ONLY=true` 在模型已缓存时仅使用本地文件、避免联网拉取。
 
 ## 功能特性
 
-- 🎨 **双模式图像生成**
-  - **SD 2.1 基础生成** - 使用 Stable Diffusion 2.1 将文本描述转化为图像
-  - **SD 1.5 + ControlNet** - 使用 ControlNet 基于 Canny 边缘图精确控制生成
-- ✨ **提示词增强** - 使用 DeepSeek API 优化提示词
-- 📊 **CLIP 语义相似度评估** - 使用 CLIP 模型评估生成图像与提示词的语义匹配度
-- 🤖 **BLIP 图像描述** - 自动生成详细的图像描述
-- 🌐 **多语言支持** - 支持中文提示词自动翻译为英文
-- 🔊 **语音播报** - 使用浏览器原生 Web Speech API 朗读图像描述
+- **双模式图像生成**
+  - **SD 2.1 基础生成** — 使用 Stable Diffusion 2.1 将文本描述转化为图像（默认 768×768，VAE Tiling）
+  - **SD 1.5 + ControlNet** — 使用 ControlNet（Canny）基于边缘图控制生成
+- **提示词增强** — 使用 DeepSeek API 将用户输入扩展为简洁中文绘画提示词
+- **CLIP 语义相似度** — 评估生成图与提示词的匹配程度
+- **BLIP 图像描述** — 为生成图自动生成英文描述
+- **多语言** — 中文提示词经翻译模型转为英文后喂给 SD/CLIP
+- **语音播报** — 浏览器 Web Speech API 朗读描述（无需后端 TTS）
 
 ## 项目结构
 
 ```
-├── api_server.py             # FastAPI 后端服务（所有功能集成于此）
-├── index.html                # 前端页面
-├── frontend/                 # React 前端项目（备用）
-├── .env.example              # 环境变量配置示例
+├── api_server.py             # FastAPI 后端（集成生成、评估、静态首页）
+├── index.html                # 前端单页（与 API 同进程同端口）
+├── frontend/                 # React 前端（可选/备用）
+├── scripts/
+│   └── download_models_stepwise.py   # 按步骤从 Hugging Face 预拉模型快照
+├── run_app.bat               # Windows：选择 Python 后启动服务并打开浏览器
+├── run_download.bat          # Windows：调用分步下载脚本（见下文）
+├── .env.example              # 环境变量模板（复制为 .env）
 ├── requirements.txt          # Python 依赖
-└── README.md                 # 项目说明文档
+└── README.md
 ```
 
 ## 快速开始
@@ -32,286 +38,223 @@
 pip install -r requirements.txt
 ```
 
+建议使用 **Python 3.10+**（代码中使用 `str | None` 等类型写法）。
+
 ### 2. 配置环境变量
 
-复制 `.env.example` 为 `.env` 并填入你的 API Key：
+复制 `.env.example` 为 `.env` 并填写密钥：
 
-```bash
+**Windows（cmd）：**
+
+```bat
 copy .env.example .env
 ```
 
-编辑 `.env` 文件：
+**类 Unix：**
+
+```bash
+cp .env.example .env
+```
+
+`.env` 示例字段：
+
 ```env
 HF_TOKEN=your-huggingface-token-here
 DEEPSEEK_API_KEY=your-deepseek-api-key-here
+# 可选：仅使用已缓存的模型，不发起下载（需本地已有缓存）
+# LOCAL_FILES_ONLY=true
 ```
 
+不要将真实 `.env` 提交到仓库。
+
 ### 3. 启动服务
+
+**任意系统：**
 
 ```bash
 python api_server.py
 ```
 
-然后打开 **http://localhost:8000** 即可使用！
+浏览器访问 **http://127.0.0.1:8000** 或 **http://localhost:8000**（首页由 `GET /` 返回 `index.html`）。
+
+**Windows 便捷方式：** 双击或在资源管理器中运行 `run_app.bat`。脚本会依次尝试上级目录的 `.venv-gpu`、本项目下的 `.venv310`、以及 `PATH` 中的 `python`，然后新开窗口启动 `api_server.py`，并尝试打开默认浏览器。
+
+## 模型预下载（可选）
+
+首次推理时，`diffusers` / `transformers` 仍可能按需下载权重。若在弱网或希望先统一下载，可使用 **`scripts/download_models_stepwise.py`**，按模型逐个调用 `huggingface_hub.snapshot_download`，并为每个仓库单独设置超时。
+
+**Windows：** 运行 `run_download.bat`（内部调用上述脚本，`--group large` 与较长超时，可按需改 bat 内参数）。
+
+**命令行示例：**
+
+```bash
+python scripts/download_models_stepwise.py --python "C:\path\to\python.exe" --group medium --timeout 600
+```
+
+- `--group`：`medium`（翻译、CLIP、BLIP）、`large`（SD2.1、SD1.5、ControlNet-Canny）、`all`
+- 脚本会加载项目根目录 `.env` 以读取 `HF_TOKEN`
 
 ## 技术栈
 
 ### 后端
 
-- **FastAPI** - Web 框架
-- **PyTorch** - 深度学习框架
-- **Diffusers** - Stable Diffusion 模型加载
-- **Transformers** - BLIP、CLIP、翻译模型
+- FastAPI、Uvicorn
+- PyTorch、Diffusers、Transformers
+- OpenCV（Canny）、Pillow、python-dotenv
 
 ### 前端
 
-- **HTML/CSS/JavaScript** - 原生前端
+- 原生 HTML / CSS / JavaScript（主入口由后端托管）
 
-### API 服务
+### 外部 API
 
-- **DeepSeek API** - 提示词增强
+- DeepSeek Chat API（提示词增强）
+- Hugging Face Hub（模型与 Token）
 
 ## 模型说明
 
-### 1. Stable Diffusion 2.1 (图像生成)
-- **函数**: `get_generator()` 
-- **模型ID**: `sd2-community/stable-diffusion-2-1-base`
-- **用途**: 根据文本提示生成图像
-- **特性**: 启用 VAE Tiling 减少边缘接缝
+### Stable Diffusion 2.1（基础生成）
 
-### 2. Stable Diffusion 1.5 + ControlNet (边缘控制生成)
-- **函数**: `get_controlnet()`
-- **模型ID**: `runwayml/stable-diffusion-v1-5`
-- **ControlNet**: `lllyasviel/sd-controlnet-canny`
-- **用途**: 基于 Canny 边缘图精确控制图像生成
-- **特点**: 更好地保持边缘细节
+- **模型 ID：** `sd2-community/stable-diffusion-2-1-base`
+- **说明：** 文本条件生成；启用 VAE Tiling 减轻拼缝感
 
-### 3. CLIP (语义相似度评估)
-- **函数**: `get_clip()`
-- **模型ID**: `openai/clip-vit-base-patch32`
-- **用途**: 在图片生成后评估提示词与生成图像的语义匹配度
-- **功能**:
-  - 编码提示词获取 text\_features
-  - 编码生成图像获取 image\_features
-  - 计算两者的余弦相似度作为语义匹配度
+### Stable Diffusion 1.5 + ControlNet Canny
 
-### 4. BLIP (图像描述)
-- **函数**: `get_captioner()`
-- **模型ID**: `Salesforce/blip-image-captioning-large`
-- **用途**: 生成详细图像文字描述
-- **特点**: 升级到 Large 版本，描述更详细准确
+- **流水线：** `runwayml/stable-diffusion-v1-5` + `lllyasviel/sd-controlnet-canny`
+- **说明：** 需先由上传图得到 Canny 图（见 `/process-canny`）
 
-### 5. 翻译模型 (中文→英文)
-- **函数**: `get_translator()`
-- **模型ID**: `Helsinki-NLP/opus-mt-zh-en`
-- **用途**: 将中文提示词翻译为英文
+### CLIP
 
-### 6. TTS 语音播报
-- **实现方式**: 浏览器原生 Web Speech API (`SpeechSynthesis`)
-- **用途**: 朗读生成的图像描述
-- **特点**: 无需后端模型，跨浏览器支持
+- **模型 ID：** `openai/clip-vit-base-patch32`
+- **说明：** 余弦相似度评估提示词与图像的语义一致性
 
-## 安装部署
+### BLIP
 
-### 1. 克隆项目
+- **模型 ID：** `Salesforce/blip-image-captioning-large`
 
-```bash
-git clone <your-repo-url>
-cd <project-folder>
-```
+### 翻译（中→英）
 
-### 2. 安装依赖
+- **模型 ID：** `Helsinki-NLP/opus-mt-zh-en`
 
-```bash
-pip install -r requirements.txt
-```
+### 语音播报
 
-### 3. 配置 API Key
+- 浏览器 `SpeechSynthesis` API，无服务端语音模型依赖
 
-在 `api_server.py` 中配置以下 API Key：
+## 安装部署（给他人使用）
 
-```python
-HF_TOKEN = 'your-huggingface-token'      # HuggingFace Token
-DEEPSEEK_API_KEY = 'your-deepseek-key'    # DeepSeek API Key
-```
-
-### 4. 首次运行
-
-首次运行时会自动从 HuggingFace 下载模型到本地缓存：
-
-- Stable Diffusion 2.1 Base (\~4GB)
-- Stable Diffusion 1.5 + ControlNet (\~4GB)
-- BLIP Image Captioning Large (\~1GB)
-- Opus MT 中文→英文 翻译模型 (\~300MB)
-- CLIP 提示词评估模型 (\~500MB)
-
-### 5. 启动服务
-
-```bash
-python api_server.py
-```
-
-服务启动后访问: **<http://localhost:8000>**
+1. **克隆仓库**后进入项目根目录（含 `api_server.py` 的目录）。
+2. **创建虚拟环境**（推荐），再 `pip install -r requirements.txt`。
+3. **仅通过 `.env` 配置密钥**（不要要求在源码里改 Key；若文档仍写「改 `api_server.py`」请以本 README 为准）。
+4. **磁盘与网络：** 全部模型与缓存体积较大，请预留约 **15GB+** 空间；需要能访问 Hugging Face（或事先在本机缓存完毕并视情况设置 `LOCAL_FILES_ONLY`）。
+5. **GPU：** 有 NVIDIA GPU + CUDA 时推理显著快于 CPU。
 
 ## 工作流程
 
 ```
 用户输入提示词
       ↓
-  ↓ 扩充提示词 (DeepSeek API)
+提示词增强（DeepSeek，可选）
+      ↓
+中译英（Opus-MT）
       ↓
 Stable Diffusion 生成图像
       ↓
-  ↓ CLIP 计算提示词与图像的语义相似度
-      ↓
-  ↓ BLIP 生成图像描述
-      ↓
-语音播报描述
+CLIP 相似度 + BLIP 描述（可选朗读）
 ```
 
-## API 接口
+## API 接口摘要
 
-### 1. SD 2.1 图像生成
+### `GET /`
 
-```bash
-POST /generate
-Content-Type: application/json
+返回单页 `index.html`；若无文件则返回 JSON 状态。
 
-{
-    "prompt": "一只可爱的猫咪",
-    "enhanced_prompt": "扩展后的提示词",
-    "num_inference_steps": 50,
-    "guidance_scale": 10.0
-}
-```
+### `GET /status`
 
-返回结果：
+返回运行环境与模型是否已加载等信息（如 `device`、`cuda_available`、`models_loaded`）。
+
+### `POST /enhance`
+
+请求体：`{"prompt": "..."}`  
+返回：`original_prompt`、`enhanced_prompt`
+
+### `POST /generate`
+
+请求体示例：
 
 ```json
 {
-    "image": "data:image/png;base64,...",
-    "original_prompt": "一只可爱的猫咪",
-    "translated_prompt": "A lovely cat...",
-    "caption": "a cat sitting on...",
-    "clip_evaluation": {
-        "similarity_score": 0.85,
-        "interpretation": "相似度越高表示生成的图像与提示词语义匹配度越好"
-    },
-    "used_num_steps": 50,
-    "used_guidance": 10.0
+  "prompt": "一只可爱的猫咪",
+  "enhanced_prompt": "可选：若提供则优先生效并参与翻译",
+  "num_inference_steps": 50,
+  "guidance_scale": 10.0
 }
 ```
 
-### 2. SD 1.5 + ControlNet 图像生成
+返回含：`image`（data URL）、`translated_prompt`、`caption`、`clip_evaluation`、`used_num_steps`、`used_guidance`
 
-```bash
-POST /generate-controlnet
-Content-Type: application/json
+### `POST /generate-controlnet`
 
-{
-    "prompt": "一只可爱的猫咪",
-    "enhanced_prompt": "扩展后的提示词",
-    "control_image": "base64 encoded canny image",
-    "num_inference_steps": 50,
-    "guidance_scale": 10.0,
-    "controlnet_conditioning_scale": 1.0
-}
-```
+请求体含：`prompt`、`control_image`（**纯 base64 字符串**，不含 `data:image/...;base64,` 前缀；与当前 `index.html` 中由 Canny 结果拆分后的字段一致）、`num_inference_steps`、`guidance_scale`、`controlnet_conditioning_scale`，以及可选 `enhanced_prompt`
 
-### 3. 提示词增强
+### `POST /process-canny`
 
-```bash
-POST /enhance
-Content-Type: application/json
+`multipart/form-data` 上传文件字段 `file`，返回 Canny 图的 data URL 等
 
-{
-    "prompt": "一只猫"
-}
-```
+### `POST /clip-evaluate`
 
-### 4. Canny 边缘图处理
+请求体：`prompt`、`image`（base64，需有效图像以计算相似度）
 
-```bash
-POST /process-canny
-Content-Type: multipart/form-data
+### `POST /caption`
 
-file: <image file>
-```
-
-### 5. CLIP 语义相似度评估（可选）
-
-```bash
-POST /clip-evaluate
-Content-Type: application/json
-
-{
-    "prompt": "A lovely cat...",
-    "image": "base64 encoded image"
-}
-```
+`multipart/form-data` 上传图像，`file` 字段；返回 `caption` 文本
 
 ## 前端使用
 
-1. 打开 `http://localhost:8000`
-2. 选择生成模式：
-   - **SD 2.1 基础生成**: 直接文本生成图像
-   - **SD 1.5 + ControlNet**: 上传参考图片，生成基于Canny边缘图的图像
-3. 在文本框中输入描述（如"一只可爱的猫咪"）
-4. 点击"✨ 扩充提示词"获得更好的效果
-5. 如果使用 ControlNet 模式，上传参考图片
-6. 点击"🚀 生成图像"
-7. 系统会显示生成的图像、BLIP描述和CLIP语义相似度评分
-8. 可点击"🔊 语音播报"朗读图像描述
+1. 打开服务根 URL（默认 8000 端口）
+2. 选择 **SD 2.1** 或 **ControlNet** 流程，按页面提示上传/输入
+3. 可使用「扩充提示词」再生成  
+4. 生成后可查看 CLIP 分数与 BLIP 描述，并可使用语音播报
 
-## CLIP 语义相似度说明
+## CLIP 分数参考
 
-| 相似度分数   | 评价              |
-| ------- | --------------- |
-| > 80%   | 优秀 - 图像与提示词高度匹配 |
-| 60%-80% | 良好 - 图像基本符合提示词  |
-| 40%-60% | 一般 - 图像部分符合提示词  |
-| < 40%   | 较差 - 图像与提示词差异较大 |
+| 相似度（约） | 含义 |
+| ------------ | ---- |
+| > 0.80       | 很高匹配 |
+| 0.60–0.80    | 较好 |
+| 0.40–0.60    | 一般 |
+| < 0.40       | 偏低（可与提示词、随机性有关） |
+
+*注：实际数值范围为模型输出，表内为经验区间。*
 
 ## 常见问题
 
-### Q: 生成图像有边缘接缝怎么办？
+### 生成图有接缝或伪影？
 
-A: 系统已启用 VAE Tiling，可以有效减少边缘接缝。如仍有明显接缝，可尝试增加推理步数。
+已启用 VAE Tiling；仍有问题时可适当增加步数或调整提示词。
 
-### Q: 图像不符合预期怎么办？
+### 启动报错「HF_TOKEN / DEEPSEEK_API_KEY 未设置」？
 
-A:
+检查项目目录下是否存在正确配置的 `.env`，或是否在系统环境中导出同名变量。
 
-1. 使用"扩充提示词"功能生成更详细的提示词
-2. 如果使用 ControlNet 模式，调整参考图片的边缘检测参数
-3. 增加推理步数和引导系数
+### Windows 下控制台乱码或 emoji 报错？
 
-### Q: 模型加载失败怎么办？
+服务端已对 stdout/stderr 尝试设为 UTF-8；若仍有终端兼容问题，可使用英文日志或减少特殊字符。
 
-A:
+### 模型下载慢或失败？
 
-1. 检查网络连接
-2. 确认 HuggingFace Token 正确
-3. 确保有足够的磁盘空间
+检查网络与 `HF_TOKEN`；可先运行 `download_models_stepwise.py` 分段下载；或使用已缓存的机器并考虑 `LOCAL_FILES_ONLY=true`。
 
-### Q: 生成速度慢怎么办？
+### 只想离线已有缓存？
 
-A:
-
-1. 使用 GPU 加速（需要 CUDA）
-2. 减少推理步数
-
-### Q: BLIP 描述太简单怎么办？
-
-A: 系统已升级到 BLIP Large 版本，默认生成更详细的描述。
+在确认 Hugging Face 缓存目录中已有对应模型文件后，设置 `LOCAL_FILES_ONLY=true`，避免程序再次发起下载。
 
 ## 环境要求
 
-- Python 3.8+
-- PyTorch 2.0+
-- 8GB+ RAM
-- 15GB+ 磁盘空间
-- 推荐: NVIDIA GPU with 8GB+ VRAM
+- **Python 3.10+**
+- **PyTorch 2.x**（根据平台安装 CPU/GPU 轮次）
+- **内存** 建议 8GB+  
+- **磁盘** 建议预留 15GB+ 用于模型与缓存  
+- **GPU（推荐）** NVIDIA GPU，显存 8GB+ 更稳妥
 
 ## License
 
