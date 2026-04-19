@@ -10,6 +10,7 @@ from PIL import Image
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi import Response
 from pydantic import BaseModel
 import uvicorn
@@ -20,6 +21,8 @@ try:
     load_dotenv()
 except ImportError:
     pass
+
+import reference_service
 
 # Windows 默认控制台常为 GBK，emoji 会导致 UnicodeEncodeError，进程在绑定端口前退出
 for _stream in (sys.stdout, sys.stderr):
@@ -64,6 +67,10 @@ _PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(_PROJECT_DIR, "style_models.json"), encoding="utf-8") as _style_file:
     STYLE_CONFIG = json.load(_style_file)
 
+_STATIC_DIR = os.path.join(_PROJECT_DIR, "static")
+if os.path.isdir(_STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+
 sd15_anime_pipe = None
 sd15_dreamshaper_pipe = None
 sd15_dreamshaper_lora_style = None
@@ -92,6 +99,8 @@ class GenerateRequest(BaseModel):
     controlnet_image: str | None = None
     generation_mode: str = "sd21"
     sd15_style: str | None = None
+    # SD1.5 正方形边长：512（默认）/ 640 / 768；大分辨率会检查显存余量
+    sd15_resolution: int | None = None
 
 class ControlNetGenerateRequest(BaseModel):
     prompt: str
@@ -99,6 +108,20 @@ class ControlNetGenerateRequest(BaseModel):
     num_inference_steps: int = 50
     guidance_scale: float = 10.0
     controlnet_conditioning_scale: float = 1.0
+    enhanced_prompt: str | None = None
+
+
+class ReferenceGenerateRequest(BaseModel):
+    """SD1.5 + 参考模式生成：control_image 为纯 base64（与前端 split(',')[1] 一致）。"""
+
+    ref_mode: str
+    prompt: str
+    control_image: str
+    num_inference_steps: int = 50
+    guidance_scale: float = 10.0
+    controlnet_conditioning_scale: float = 1.0
+    ip_adapter_scale: float = 0.6
+    strength: float = 0.55
     enhanced_prompt: str | None = None
 
 class EnhanceRequest(BaseModel):
@@ -216,9 +239,33 @@ def translate_to_english(text: str) -> str:
     print(f"Translated: '{text}' -> '{translated}'")
     return translated
 
+def unload_legacy_controlnet() -> None:
+    """卸载旧版 Canny ControlNet 管线（与参考模式栈互斥）。"""
+    global controlnet
+    if controlnet is None:
+        return
+    try:
+        if isinstance(controlnet, dict) and controlnet.get("pipeline") is not None:
+            del controlnet["pipeline"]
+    except Exception as e:
+        print(f"unload_legacy_controlnet: {e}")
+    controlnet = None
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def _prepare_for_reference_stack() -> None:
+    unload_legacy_controlnet()
+    unload_all_sd15()
+    _unload_sd21_for_sd15()
+
+
 def get_generator():
     global image_generator
     if image_generator is None:
+        reference_service.unload_reference_bundle()
+        unload_legacy_controlnet()
         unload_all_sd15()
         import logging
         logging.getLogger("diffusers").setLevel(logging.WARNING)
@@ -323,6 +370,7 @@ def compute_image_text_similarity(prompt: str, image: Image.Image):
 def get_controlnet():
     global controlnet
     if controlnet is None:
+        reference_service.unload_reference_bundle()
         unload_all_sd15()
         from diffusers import StableDiffusionControlNetPipeline, ControlNetModel
         print("Loading ControlNet (Canny)...")
@@ -425,8 +473,15 @@ def _get_lora_weight_file_path(meta: dict) -> str:
             ) from e
         return _dl(False)
 
-def _get_counterfeit_single_file_path() -> str:
-    cf = STYLE_CONFIG["counterfeit"]
+def _anime_checkpoint_config() -> dict:
+    """二次元单文件底模配置：优先 `anime`，兼容旧键 `counterfeit`。"""
+    if "anime" in STYLE_CONFIG:
+        return STYLE_CONFIG["anime"]
+    return STYLE_CONFIG["counterfeit"]
+
+
+def _get_anime_checkpoint_path() -> str:
+    cf = _anime_checkpoint_config()
     local = _resolve_local_path(cf.get("local_fallback"))
     if local:
         return local
@@ -445,20 +500,48 @@ def _get_counterfeit_single_file_path() -> str:
     except Exception as e:
         if LOCAL_FILES_ONLY or not ALLOW_HF_HUB_DOWNLOAD:
             raise RuntimeError(
-                f"Counterfeit weights not in HF cache ({cf['hf_repo']} / {cf['weight_file']}). "
-                "Pre-download or set ALLOW_HF_HUB_DOWNLOAD=true."
+                f"二次元底模不在 HF 缓存 ({cf['hf_repo']} / {cf['weight_file']}). "
+                "请先下载或设置 ALLOW_HF_HUB_DOWNLOAD=true。"
             ) from e
         return _dl(False)
 
+
+def _assert_sd15_vram_allows_resolution(edge: int) -> None:
+    """大分辨率激活占用更高；显存不足时提前 400 提示。"""
+    if edge <= 512:
+        return
+    if not torch.cuda.is_available():
+        return
+    try:
+        free_b, _total_b = torch.cuda.mem_get_info()
+    except Exception:
+        return
+    free_gb = free_b / (1024**3)
+    # 经验阈值：640/768 需要更多空闲显存（已加载 UNet 等之后）
+    need_gb = {640: 2.8, 768: 4.2}.get(edge, 0.0)
+    if need_gb > 0 and free_gb < need_gb:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"当前 GPU 空闲显存约 {free_gb:.1f} GB，不足以稳妥使用 {edge}×{edge}。"
+                f"建议选择 512，或关闭其他占用显存的程序后再试 640/768。"
+            ),
+        )
+
+
 def get_sd15_anime_pipe():
     global sd15_anime_pipe
+    reference_service.unload_reference_bundle()
+    unload_legacy_controlnet()
     unload_sd15_dreamshaper_full()
     _unload_sd21_for_sd15()
     if sd15_anime_pipe is not None:
         return sd15_anime_pipe
     from diffusers import StableDiffusionPipeline
-    path = _get_counterfeit_single_file_path()
-    print(f"Loading Counterfeit SD1.5 (anime)...")
+
+    path = _get_anime_checkpoint_path()
+    cf = _anime_checkpoint_config()
+    print(f"Loading SD1.5 anime checkpoint ({cf.get('hf_repo')} / {cf.get('weight_file')})...")
     sd15_anime_pipe = _hf_local_first(
         lambda lfo: StableDiffusionPipeline.from_single_file(
             path,
@@ -467,17 +550,19 @@ def get_sd15_anime_pipe():
             requires_safety_checker=False,
             local_files_only=lfo,
         ),
-        "Counterfeit SD1.5 (single-file)",
+        "SD1.5 anime (single-file)",
     )
     device = "cuda" if torch.cuda.is_available() else "cpu"
     sd15_anime_pipe = sd15_anime_pipe.to(device)
     if hasattr(sd15_anime_pipe, "enable_vae_tiling"):
         sd15_anime_pipe.enable_vae_tiling()
-    print("Counterfeit SD1.5 loaded.")
+    print("SD1.5 anime checkpoint loaded.")
     return sd15_anime_pipe
 
 def get_sd15_dreamshaper_base():
     global sd15_dreamshaper_pipe
+    reference_service.unload_reference_bundle()
+    unload_legacy_controlnet()
     if sd15_dreamshaper_pipe is None:
         import logging
         logging.getLogger("diffusers").setLevel(logging.WARNING)
@@ -569,6 +654,8 @@ def _apply_lora_to_dreamshaper(style_key: str):
 def prepare_sd15_pipe(style: str):
     """style: anime | watercolor | oil | realistic | sketch"""
     global sd15_dreamshaper_lora_style
+    reference_service.unload_reference_bundle()
+    unload_legacy_controlnet()
     allowed = {"anime", "watercolor", "oil", "realistic", "sketch"}
     if style not in allowed:
         raise ValueError(f"sd15_style must be one of {allowed}")
@@ -613,6 +700,7 @@ def status():
             "blip": captioner is not None,
             "clip": clip_alignment is not None,
             "controlnet": controlnet is not None,
+            "reference_mode": reference_service.get_loaded_reference_mode(),
         }
     }
 
@@ -629,6 +717,37 @@ def enhance_prompt_api(req: EnhanceRequest):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/reference-modes")
+def reference_modes_public():
+    """返回 reference_modes.json（含各模式说明与仓库 id），供前端展示单选与提示文案。"""
+    return reference_service.load_reference_config()
+
+
+@app.post("/process-reference")
+async def process_reference_image_api(ref_mode: str = Form(...), file: UploadFile = File(...)):
+    """按 ref_mode 做预处理（Depth/OpenPose 等），不加载 SD 权重。"""
+    try:
+        reference_service.get_mode_config(ref_mode)
+    except KeyError:
+        raise HTTPException(status_code=400, detail=f"无效的 ref_mode: {ref_mode}")
+    try:
+        contents = await file.read()
+        image = Image.open(io.BytesIO(contents)).convert("RGB")
+        out = reference_service.preprocess_reference_image(ref_mode, image)
+        buf = io.BytesIO()
+        out.save(buf, format="PNG")
+        img_str = base64.b64encode(buf.getvalue()).decode()
+        return {
+            "ref_mode": ref_mode,
+            "control_image": f"data:image/png;base64,{img_str}",
+            "output_size": reference_service.get_output_size(),
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/process-canny")
 async def process_canny_image(file: UploadFile = File(...)):
@@ -698,6 +817,8 @@ def generate_image(req: GenerateRequest):
         mode = (req.generation_mode or "sd21").lower()
         if mode not in ("sd21", "sd15"):
             raise HTTPException(status_code=400, detail="generation_mode 须为 sd21 或 sd15")
+        st = None
+        lora_meta = None
         if mode == "sd15":
             if not req.sd15_style:
                 raise HTTPException(status_code=400, detail="使用 sd15 时必须提供 sd15_style")
@@ -714,11 +835,17 @@ def generate_image(req: GenerateRequest):
 
         num_steps = req.num_inference_steps
         guidance = req.guidance_scale
-        
+
         import os
-        os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+        os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
         sd15_h = int(STYLE_CONFIG.get("sd15_size", 512))
+        if mode == "sd15":
+            if req.sd15_resolution is not None:
+                sd15_h = int(req.sd15_resolution)
+            if sd15_h not in (512, 640, 768):
+                raise HTTPException(status_code=400, detail="sd15_resolution 须为 512、640 或 768")
+            _assert_sd15_vram_allows_resolution(sd15_h)
 
         if mode == "sd15":
             pipe, lora_meta = prepare_sd15_pipe(st)
@@ -741,16 +868,21 @@ def generate_image(req: GenerateRequest):
                     guidance_scale=guidance,
                     height=768,
                     width=768,
-                    enable_vae_tiling=True
+                    enable_vae_tiling=True,
                 ).images[0]
             else:
-                image = pipe(
-                    final_prompt,
+                sd_kwargs = dict(
                     num_inference_steps=num_steps,
                     guidance_scale=guidance,
                     height=sd15_h,
                     width=sd15_h,
-                ).images[0]
+                )
+                if st == "anime":
+                    acfg = _anime_checkpoint_config()
+                    csk = acfg.get("clip_skip")
+                    if csk is not None:
+                        sd_kwargs["clip_skip"] = int(csk)
+                image = pipe(final_prompt, **sd_kwargs).images[0]
         
         img_buffer = io.BytesIO()
         image.save(img_buffer, format="PNG")
@@ -775,8 +907,11 @@ def generate_image(req: GenerateRequest):
             "used_guidance": guidance,
             "generation_mode": mode,
             "sd15_style": req.sd15_style if mode == "sd15" else None,
+            "used_sd15_resolution": sd15_h if mode == "sd15" else None,
         }
         return out
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -854,6 +989,113 @@ async def generate_with_controlnet(req: ControlNetGenerateRequest):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/generate-reference")
+def generate_reference_api(req: ReferenceGenerateRequest):
+    """SD1.5 + 参考模式：仅加载当前 ref_mode 对应权重（切换模式时会卸载上一模式栈）。"""
+    try:
+        os.environ["TOKENIZERS_PARALLELISM"] = "false"
+        try:
+            reference_service.get_mode_config(req.ref_mode)
+        except KeyError:
+            raise HTTPException(status_code=400, detail=f"无效的 ref_mode: {req.ref_mode}")
+
+        _prepare_for_reference_stack()
+        bundle = reference_service.load_reference_pipeline(
+            req.ref_mode,
+            hf_token=HF_TOKEN,
+            local_files_only=LOCAL_FILES_ONLY,
+            allow_hub=ALLOW_HF_HUB_DOWNLOAD,
+        )
+        pipe = bundle["pipeline"]
+        size = reference_service.get_output_size()
+
+        image_data = base64.b64decode(req.control_image)
+        pil = Image.open(io.BytesIO(image_data)).convert("RGB")
+
+        if req.enhanced_prompt:
+            translated = translate_to_english(req.enhanced_prompt)
+        else:
+            translated = translate_to_english(req.prompt)
+
+        mc = reference_service.get_mode_config(req.ref_mode)
+        mtype = mc["type"]
+
+        with torch.inference_mode():
+            if mtype == "controlnet":
+                out_img = pipe(
+                    translated,
+                    image=pil,
+                    num_inference_steps=req.num_inference_steps,
+                    guidance_scale=req.guidance_scale,
+                    controlnet_conditioning_scale=req.controlnet_conditioning_scale,
+                    height=size,
+                    width=size,
+                ).images[0]
+            elif mtype == "ip_adapter":
+                try:
+                    pipe.set_ip_adapter_scale(float(req.ip_adapter_scale))
+                except Exception as e:
+                    print(f"set_ip_adapter_scale: {e}")
+                try:
+                    out_img = pipe(
+                        translated,
+                        ip_adapter_image=pil,
+                        num_inference_steps=req.num_inference_steps,
+                        guidance_scale=req.guidance_scale,
+                        height=size,
+                        width=size,
+                    ).images[0]
+                except TypeError:
+                    out_img = pipe(
+                        translated,
+                        image=pil,
+                        num_inference_steps=req.num_inference_steps,
+                        guidance_scale=req.guidance_scale,
+                        height=size,
+                        width=size,
+                    ).images[0]
+            elif mtype == "img2img":
+                out_img = pipe(
+                    translated,
+                    image=pil,
+                    strength=float(req.strength),
+                    num_inference_steps=req.num_inference_steps,
+                    guidance_scale=req.guidance_scale,
+                ).images[0]
+            else:
+                raise HTTPException(status_code=500, detail=f"未知模式类型: {mtype}")
+
+        img_buffer = io.BytesIO()
+        out_img.save(img_buffer, format="PNG")
+        img_str = base64.b64encode(img_buffer.getvalue()).decode()
+
+        cap = get_captioner()
+        inputs = cap["processor"](out_img, return_tensors="pt").to(cap["model"].device)
+        with torch.no_grad():
+            output = cap["model"].generate(**inputs, max_length=100)
+        caption = cap["processor"].decode(output[0], skip_special_tokens=True)
+
+        clip_evaluation = compute_image_text_similarity(translated, out_img)
+
+        return {
+            "image": f"data:image/png;base64,{img_str}",
+            "original_prompt": req.prompt,
+            "translated_prompt": translated,
+            "caption": caption,
+            "clip_evaluation": clip_evaluation,
+            "used_num_steps": req.num_inference_steps,
+            "used_guidance": req.guidance_scale,
+            "ref_mode": req.ref_mode,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     print("Starting FastAPI server on http://localhost:8000")

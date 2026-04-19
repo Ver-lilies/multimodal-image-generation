@@ -5,833 +5,289 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>多模态图像生成系统</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-            min-height: 100vh;
-            color: #fff;
-        }
-
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-
-        header {
-            text-align: center;
-            padding: 40px 0;
-        }
-
-        header h1 {
-            font-size: 2.5rem;
-            background: linear-gradient(90deg, #00d2ff, #3a7bd5);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            margin-bottom: 10px;
-        }
-
-        .tabs {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 30px;
-        }
-
-        .tab {
-            flex: 1;
-            padding: 15px;
-            background: rgba(255, 255, 255, 0.05);
-            border: 2px solid transparent;
-            border-radius: 10px;
-            cursor: pointer;
-            text-align: center;
-            font-size: 1.1rem;
-            transition: all 0.3s;
-            color: #fff;
-        }
-
-        .tab:hover {
-            background: rgba(255, 255, 255, 0.1);
-        }
-
-        .tab.active {
-            background: rgba(0, 210, 255, 0.2);
-            border-color: #00d2ff;
-        }
-
-        .panel {
-            display: none;
-            background: rgba(255, 255, 255, 0.05);
-            border-radius: 15px;
-            padding: 30px;
-        }
-
-        .panel.active {
-            display: block;
-        }
-
-        .input-group {
-            margin-bottom: 20px;
-        }
-
-        label {
-            display: block;
-            margin-bottom: 8px;
-            color: #aaa;
-        }
-
-        input[type="text"],
-        input[type="number"],
-        textarea {
-            width: 100%;
-            padding: 12px;
-            background: rgba(255, 255, 255, 0.1);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            border-radius: 8px;
-            color: #fff;
-            font-size: 1rem;
-        }
-
-        textarea {
-            min-height: 100px;
-            resize: vertical;
-        }
-
-        .slider-group {
-            display: flex;
-            gap: 20px;
-            margin-bottom: 20px;
-        }
-
-        .slider-item {
-            flex: 1;
-        }
-
-        .slider-item input {
-            width: 100%;
-        }
-
-        .checkbox-group {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            margin-bottom: 20px;
-        }
-
-        .checkbox-group input[type="checkbox"] {
-            width: 20px;
-            height: 20px;
-        }
-
-        .main-content {
-            display: flex;
-            gap: 30px;
-            min-height: 500px;
-        }
-
-        .left-panel {
-            flex: 1;
-            padding: 20px;
-            background: #2d3436;
-            border-radius: 12px;
-            color: #fff;
-        }
-
-        .right-panel {
-            flex: 1;
-            padding: 20px;
-            background: #2d3436;
-            border-radius: 12px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            color: #fff;
-        }
-
-        .left-panel input[type="text"],
-        .left-panel input[type="number"],
-        .left-panel textarea {
-            background: #3d4449;
-            border: 1px solid #555;
-            color: #fff;
-        }
-
-        .left-panel label {
-            color: #fff;
-        }
-
-        .right-panel .result {
-            width: 100%;
-            text-align: center;
-        }
-
-        .right-panel img {
-            max-width: 100%;
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-        }
-
-        .placeholder-result {
-            color: #888;
-            font-size: 1.1rem;
-            text-align: center;
-            padding: 40px;
-            border: 2px dashed #555;
-            border-radius: 8px;
-        }
-
-        .left-panel .input-group textarea {
-            min-height: 100px;
-        }
-
-        .left-panel #enhanced-prompt {
-            min-height: 80px;
-        }
-
-        button {
-            width: 100%;
-            padding: 15px;
-            background: linear-gradient(90deg, #00d2ff, #3a7bd5);
-            border: none;
-            border-radius: 8px;
-            color: #fff;
-            font-size: 1.1rem;
-            cursor: pointer;
-            transition: transform 0.2s;
-        }
-
-        button:hover {
-            transform: scale(1.02);
-        }
-
-        button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-
-        .result {
-            margin-top: 30px;
-            color: #fff;
-        }
-
-        .result h3 {
-            color: #fff;
-            margin-bottom: 15px;
-        }
-
-        .result img {
-            max-width: 100%;
-            border-radius: 10px;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
-        }
-
-        .caption-result {
-            margin-top: 20px;
-            padding: 20px;
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 10px;
-            color: #fff;
-        }
-
-        .loading {
-            display: none;
-            text-align: center;
-            padding: 40px;
-        }
-
-        .loading.active {
-            display: block;
-        }
-
-        .loading .spinner {
-            width: 50px;
-            height: 50px;
-            border: 4px solid rgba(255, 255, 255, 0.2);
-            border-top-color: #00d2ff;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 20px;
-        }
-
-        @keyframes spin {
-            to {
-                transform: rotate(360deg);
-            }
-        }
-
-        .progress-bar {
-            width: 80%;
-            height: 20px;
-            background: rgba(255, 255, 255, 0.2);
-            border-radius: 10px;
-            overflow: hidden;
-            margin: 20px auto;
-        }
-
-        .progress-fill {
-            height: 100%;
-            background: linear-gradient(90deg, #00d2ff, #3a7bd5);
-            width: 0%;
-            transition: width 0.3s ease;
-            border-radius: 10px;
-        }
-
-        .progress-percent {
-            font-size: 1.5rem;
-            font-weight: bold;
-            color: #00d2ff;
-        }
-
-        .file-upload {
-            border: 2px dashed rgba(255, 255, 255, 0.3);
-            border-radius: 10px;
-            padding: 40px;
-            text-align: center;
-            cursor: pointer;
-            transition: all 0.3s;
-        }
-
-        .file-upload:hover {
-            border-color: #00d2ff;
-            background: rgba(0, 210, 255, 0.1);
-        }
-
-        .file-upload input {
-            display: none;
-        }
-
-        .preview-image {
-            max-width: 300px;
-            margin: 20px auto;
-            display: block;
-            border-radius: 10px;
-        }
-
-        .controlnet-section {
-            margin-top: 20px;
-            padding: 15px;
-            background: #2c3e50;
-            border-radius: 10px;
-            border: 1px solid #9b59b6;
-        }
-
-        .controlnet-section h4 {
-            color: #9b59b6;
-            margin-bottom: 15px;
-        }
-
-        .controlnet-upload {
-            border: 2px dashed rgba(155, 89, 182, 0.5);
-            border-radius: 8px;
-            padding: 20px;
-            text-align: center;
-            cursor: pointer;
-            transition: all 0.3s;
-            margin-bottom: 15px;
-        }
-
-        .controlnet-upload:hover {
-            border-color: #9b59b6;
-            background: rgba(155, 89, 182, 0.1);
-        }
-
-        .controlnet-preview {
-            max-width: 100%;
-            border-radius: 8px;
-            display: none;
-        }
-
-        .controlnet-preview.active {
-            display: block;
-        }
-
-        .controlnet-hint {
-            font-size: 0.85rem;
-            color: #888;
-            margin-top: 10px;
-        }
-    </style>
+    <link rel="stylesheet" href="/static/css/app.css">
 </head>
 
 <body>
     <div class="container">
         <header>
-            <h1>🎨 多模态图像生成系统</h1>
-            <p>输入文本生成图像，自动生成描述，支持语音播报</p>
+            <h1>多模态图像生成系统</h1>
+            <p class="subtitle">文本生成图像 · 提示词扩充 · CLIP 评估 · 可选语音朗读</p>
         </header>
 
-        <!-- 模式切换导航 -->
-        <div class="tabs">
-            <div class="tab active" id="tab-sd21" onclick="switchMode('sd21')">🚀 SD 2.1 基础生成</div>
-            <div class="tab" id="tab-controlnet" onclick="switchMode('controlnet')">🎯 SD 1.5 + ControlNet</div>
+        <div class="prefs-bar">
+            <label>
+                <input type="checkbox" id="prefs-autospeak">
+                生成成功后自动朗读描述（默认关闭）
+            </label>
         </div>
 
-        <!-- SD 2.1 基础生成面板 -->
-        <div class="panel active" id="sd21-panel">
+        <div class="tabs" role="tablist" aria-label="生成模式">
+            <button type="button" class="tab active" id="tab-sd21" role="tab" aria-selected="true"
+                aria-controls="sd21-panel" tabindex="0" onclick="switchMode('sd21')">文生图（SD 2.1 / SD 1.5 风格）</button>
+            <button type="button" class="tab" id="tab-controlnet" role="tab" aria-selected="false"
+                aria-controls="controlnet-panel" tabindex="-1" onclick="switchMode('controlnet')">SD 1.5 + 参考模式</button>
+        </div>
+
+        <!-- 文生图 -->
+        <div class="panel active" id="sd21-panel" role="tabpanel" aria-labelledby="tab-sd21">
             <div class="main-content">
                 <div class="left-panel">
-                    <div class="input-group">
-                        <label>输入文本提示词</label>
-                        <textarea id="sd21-prompt" placeholder="输入你的创意，例如：一只可爱的猫咪..."></textarea>
-                    </div>
-
-                    <div class="input-group">
-                        <label>生成后端（与 SD 2.1 相同流程：翻译 → 生成 → 描述 → CLIP；SD1.5 为 512×512）</label>
-                        <select id="sd21-backend" style="width: 100%; padding: 10px; border-radius: 8px; background: rgba(255,255,255,0.08); color: #fff; border: 1px solid rgba(255,255,255,0.2);">
-                            <option value="sd21">SD 2.1 基础（768×768）</option>
-                            <option value="anime">SD 1.5 二次元（Counterfeit-V3）</option>
-                            <option value="watercolor">SD 1.5 水彩（DreamShaper + LoRA）</option>
-                            <option value="oil">SD 1.5 油画风（DreamShaper + LoRA）</option>
-                            <option value="realistic">SD 1.5 写实（DreamShaper）</option>
-                            <option value="sketch">SD 1.5 素描（DreamShaper + LoRA）</option>
-                        </select>
-                    </div>
-
-                    <button id="sd21-enhance-btn" onclick="enhancePrompt('sd21')"
-                        style="background: linear-gradient(90deg, #9b59b6, #8e44ad); width: 100%; margin-bottom: 20px;">✨
-                        扩充提示词</button>
-
-                    <div id="sd21-enhanced-section" style="display: none;">
+                    <section class="step">
+                        <h2 class="step-title"><span class="step-num">1</span>提示词</h2>
                         <div class="input-group">
-                            <label>扩充后的提示词（可编辑）:</label>
-                            <textarea id="sd21-enhanced-prompt" placeholder="扩充后的提示词将显示在这里..."></textarea>
+                            <label class="field-label" for="sd21-prompt">输入创意描述（支持中文）</label>
+                            <textarea id="sd21-prompt" placeholder="例如：一只可爱的猫咪坐在窗台边…" rows="4"></textarea>
+                            <p class="hint-text">快捷键：在输入框内按 Ctrl+Enter 可快速生成。</p>
                         </div>
-                    </div>
+                    </section>
 
-                    <div class="loading" id="sd21-enhance-loading" style="display: none;">
-                        <div class="spinner"></div>
-                        <p>正在扩充提示词，请稍候...</p>
-                    </div>
-
-                    <div class="slider-group">
-                        <div class="slider-item">
-                            <label>推理步数: <span id="sd21-steps-value">50</span></label>
-                            <input type="range" id="sd21-steps" min="10" max="100" value="50"
-                                oninput="document.getElementById('sd21-steps-value').textContent = this.value">
+                    <section class="step">
+                        <h2 class="step-title"><span class="step-num">2</span>画风 / 模型</h2>
+                        <div class="input-group">
+                            <label class="field-label" for="sd21-backend">选择生成管线（流程均为：翻译 → 生成 → BLIP → CLIP）</label>
+                            <select id="sd21-backend" class="ui-select">
+                                <option value="sd21">SD 2.1 基础（768×768）</option>
+                                <option value="anime">SD 1.5 二次元（AOM3A3）</option>
+                                <option value="watercolor">SD 1.5 水彩（DreamShaper + LoRA）</option>
+                                <option value="oil">SD 1.5 油画风（DreamShaper + LoRA）</option>
+                                <option value="realistic">SD 1.5 写实（DreamShaper）</option>
+                                <option value="sketch">SD 1.5 素描（DreamShaper + LoRA）</option>
+                            </select>
+                            <p class="hint-text">若填写了下方「扩充提示词」，生成将优先采用扩充内容。</p>
                         </div>
-                        <div class="slider-item">
-                            <label>引导系数: <span id="sd21-guidance-value">10.0</span></label>
-                            <input type="range" id="sd21-guidance" min="1" max="20" value="10.0" step="0.5"
-                                oninput="document.getElementById('sd21-guidance-value').textContent = this.value">
+                        <div class="input-group" id="sd15-resolution-wrap" style="display: none; margin-top: 12px;">
+                            <label class="field-label" for="sd15-resolution">SD 1.5 输出边长（正方形）</label>
+                            <select id="sd15-resolution" class="ui-select">
+                                <option value="512" selected>512（默认，省显存）</option>
+                                <option value="640">640（更清晰，需更多显存）</option>
+                                <option value="768">768（最清晰，需较大显存）</option>
+                            </select>
+                            <p class="hint-text">选 640/768 时服务端会检查 GPU 空闲显存；不足时将提示改用 512 或关闭其它占显存程序。二次元底模已启用 CLIP Skip = 2。</p>
                         </div>
-                    </div>
+                    </section>
 
-                    <button id="sd21-generate-btn" onclick="generateImage('sd21')" style="width: 100%;">🚀 生成图像</button>
+                    <section class="step">
+                        <h2 class="step-title"><span class="step-num">3</span>可选：扩充提示词</h2>
+                        <button type="button" id="sd21-enhance-btn" class="btn btn-secondary"
+                            onclick="enhancePrompt('sd21')">扩充提示词（DeepSeek）</button>
+                        <div id="sd21-enhance-loading" class="loading" style="display: none;">
+                            <div class="spinner"></div>
+                            <p>正在扩充…</p>
+                        </div>
+                        <div id="sd21-enhanced-section" style="display: none; margin-top: 14px;">
+                            <div class="input-group">
+                                <label class="field-label" for="sd21-enhanced-prompt">扩充结果（可编辑；有内容时优先生效）</label>
+                                <textarea id="sd21-enhanced-prompt" placeholder="扩充后的提示词将显示在这里…"></textarea>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="step">
+                        <h2 class="step-title"><span class="step-num">4</span>参数与生成</h2>
+                        <details class="advanced-block">
+                            <summary>高级参数：推理步数 / 引导强度</summary>
+                            <div class="slider-group" style="margin-top: 12px;">
+                                <div class="slider-item">
+                                    <label class="field-label">推理步数 <span id="sd21-steps-value">50</span></label>
+                                    <input type="range" id="sd21-steps" min="10" max="100" value="50"
+                                        oninput="document.getElementById('sd21-steps-value').textContent = this.value">
+                                </div>
+                                <div class="slider-item">
+                                    <label class="field-label">引导系数 <span id="sd21-guidance-value">10.0</span></label>
+                                    <input type="range" id="sd21-guidance" min="1" max="20" value="10" step="0.5"
+                                        oninput="document.getElementById('sd21-guidance-value').textContent = this.value">
+                                </div>
+                            </div>
+                        </details>
+                        <button type="button" id="sd21-generate-btn" class="btn btn-primary" style="margin-top: 16px;"
+                            onclick="generateImage('sd21')">生成图像</button>
+                    </section>
                 </div>
 
-                <div class="right-panel">
+                <div class="right-panel" aria-live="polite">
                     <div class="loading" id="sd21-generate-loading">
                         <div class="spinner"></div>
-                        <p id="sd21-loading-text">正在生成图像，请稍候...</p>
-                        <div class="progress-bar">
-                            <div class="progress-fill" id="sd21-progress-fill"></div>
+                        <p id="sd21-loading-text">正在生成图像…</p>
+                        <div class="progress-wrap">
+                            <div class="progress-bar" id="sd21-progress-bar">
+                                <div class="progress-indeterminate"></div>
+                            </div>
+                            <p class="progress-hint">推理进行中，进度为估算；请耐心等待（可能需数十秒）。</p>
                         </div>
-                        <p class="progress-percent" id="sd21-progress-percent">0%</p>
                     </div>
 
                     <div class="result" id="sd21-generate-result" style="display: none;">
                         <h3>生成结果</h3>
-                        <img id="sd21-result-image" src="" alt="Generated Image">
+                        <img id="sd21-result-image" src="" alt="生成图像">
                         <div class="caption-result">
-                            <label>图像描述:</label>
+                            <label class="field-label">图像描述</label>
                             <p id="sd21-result-caption"></p>
                         </div>
-                        <div class="clip-result" id="sd21-clip-evaluation"
-                            style="display: none; margin-top: 10px; padding: 10px; background: #2c3e50; border-radius: 5px; border: 1px solid #00d2ff;">
-                            <label style="color: #fff;">CLIP 语义相似度:</label>
-                            <p id="sd21-clip-quality" style="color: #fff;"></p>
-                            <p id="sd21-clip-similarity" style="color: #fff;"></p>
+                        <div class="clip-card" id="sd21-clip-evaluation" style="display: none;">
+                            <label class="field-label">CLIP</label>
+                            <p id="sd21-clip-quality"></p>
+                            <p id="sd21-clip-similarity"></p>
                         </div>
-                        <button id="sd21-speak-btn" onclick="speakCaption('sd21')"
-                            style="margin-top: 15px; background: linear-gradient(90deg, #e74c3c, #c0392b);">🔊
-                            语音播报</button>
+                        <div class="btn-row">
+                            <button type="button" class="btn btn-ghost" onclick="downloadResultImage('sd21')">下载图片</button>
+                            <button type="button" class="btn btn-ghost" onclick="copyResultCaption('sd21')">复制描述</button>
+                            <button type="button" class="btn btn-danger-soft" onclick="speakCaption('sd21')">朗读描述</button>
+                        </div>
                     </div>
                     <div id="sd21-placeholder-result" class="placeholder-result">
-                        <p>生成的图片将显示在这里</p>
+                        <div class="ph-icon" aria-hidden="true">◇</div>
+                        <p>在左侧输入提示词并点击「生成图像」，结果将显示在此处。</p>
                     </div>
                 </div>
             </div>
         </div>
 
-        <!-- SD 1.5 + ControlNet 面板 -->
-        <div class="panel" id="controlnet-panel">
+        <!-- ControlNet -->
+        <div class="panel" id="controlnet-panel" role="tabpanel" aria-labelledby="tab-controlnet">
             <div class="main-content">
                 <div class="left-panel">
-                    <div class="input-group">
-                        <label>输入文本提示词</label>
-                        <textarea id="cn-prompt" placeholder="输入你的创意，例如：一只可爱的猫咪..."></textarea>
-                    </div>
-
-                    <button id="cn-enhance-btn" onclick="enhancePrompt('cn')"
-                        style="background: linear-gradient(90deg, #9b59b6, #8e44ad); width: 100%; margin-bottom: 20px;">✨
-                        扩充提示词</button>
-
-                    <div id="cn-enhanced-section" style="display: none;">
+                    <section class="step">
+                        <h2 class="step-title"><span class="step-num">1</span>提示词</h2>
                         <div class="input-group">
-                            <label>扩充后的提示词（可编辑）:</label>
-                            <textarea id="cn-enhanced-prompt" placeholder="扩充后的提示词将显示在这里..."></textarea>
+                            <label class="field-label" for="cn-prompt">输入创意描述</label>
+                            <textarea id="cn-prompt" placeholder="描述你希望生成的画面…" rows="4"></textarea>
                         </div>
-                    </div>
+                    </section>
 
-                    <div class="loading" id="cn-enhance-loading" style="display: none;">
-                        <div class="spinner"></div>
-                        <p>正在扩充提示词，请稍候...</p>
-                    </div>
-
-                    <div class="slider-group">
-                        <div class="slider-item">
-                            <label>推理步数: <span id="cn-steps-value">50</span></label>
-                            <input type="range" id="cn-steps" min="10" max="100" value="50"
-                                oninput="document.getElementById('cn-steps-value').textContent = this.value">
+                    <section class="step">
+                        <h2 class="step-title"><span class="step-num">2</span>可选：扩充提示词</h2>
+                        <button type="button" id="cn-enhance-btn" class="btn btn-secondary"
+                            onclick="enhancePrompt('cn')">扩充提示词</button>
+                        <div id="cn-enhance-loading" class="loading" style="display: none;">
+                            <div class="spinner"></div>
+                            <p>正在扩充…</p>
                         </div>
-                        <div class="slider-item">
-                            <label>引导系数: <span id="cn-guidance-value">10.0</span></label>
-                            <input type="range" id="cn-guidance" min="1" max="20" value="10.0" step="0.5"
-                                oninput="document.getElementById('cn-guidance-value').textContent = this.value">
+                        <div id="cn-enhanced-section" style="display: none; margin-top: 14px;">
+                            <div class="input-group">
+                                <label class="field-label" for="cn-enhanced-prompt">扩充结果（可编辑）</label>
+                                <textarea id="cn-enhanced-prompt" placeholder="扩充后的提示词…"></textarea>
+                            </div>
                         </div>
-                    </div>
+                    </section>
 
-                    <div class="controlnet-section">
-                        <h4>🎯 ControlNet 控制图像</h4>
+                    <section class="step">
+                        <h2 class="step-title"><span class="step-num">3</span>参考模式与参考图</h2>
+                        <div class="input-group" style="margin-bottom: 12px;">
+                            <label class="field-label" for="cn-ref-mode">参考模式（单选）</label>
+                            <select id="cn-ref-mode" class="ui-select" onchange="onReferenceModeChange()">
+                                <option value="depth">Depth 深度</option>
+                                <option value="openpose">OpenPose 姿势</option>
+                                <option value="lineart">Lineart 线稿</option>
+                                <option value="softedge">SoftEdge (HED)</option>
+                                <option value="canny">Canny 硬边缘</option>
+                                <option value="ip_adapter">IP-Adapter</option>
+                                <option value="img2img">Img2Img 图生图</option>
+                            </select>
+                            <p id="cn-ref-hint" class="hint-text" style="margin-top: 8px;">加载模式说明中…</p>
+                        </div>
+                        <div class="controlnet-section">
+                            <h4>上传参考图</h4>
+                            <p class="hint-text" style="margin-bottom: 10px;">上传后按所选模式生成控制图或缩略图；服务端仅加载当前模式所需权重。</p>
+                            <div id="cn-upload-dropzone" class="controlnet-upload"
+                                onclick="document.getElementById('cn-reference-file').click()">
+                                <input type="file" id="cn-reference-file" accept="image/*" hidden
+                                    onchange="handleReferenceUpload(event)">
+                                <p style="color: var(--text-muted);">点击或选择图片上传</p>
+                                <p class="controlnet-hint">支持常见图片格式</p>
+                            </div>
+                            <div id="cn-upload-status" class="upload-status hidden">
+                                <p class="status-title">参考图已处理</p>
+                                <p class="status-sub">左侧为原图，右侧为当前模式下的控制图或输入图；生成时将仅加载本模式对应的 SD1.5 权重。</p>
+                            </div>
+                            <div class="cn-preview-row">
+                                <img id="cn-reference-preview" alt="参考图预览">
+                                <img id="cn-canny-preview" alt="控制图或输入图预览">
+                            </div>
+                            <button type="button" id="cn-reset-upload" class="btn btn-ghost hidden"
+                                onclick="resetCannyUpload()">重新选择图片</button>
+                        </div>
+                    </section>
 
-                        <div style="margin-bottom: 15px;">
-                            <p style="color: #aaa; margin-bottom: 8px;">📤 上传参考图片（自动转为 Canny 边缘图）：</p>
-                            <div id="cn-upload-container">
-                                <div class="controlnet-upload" id="cn-upload-box"
-                                    onclick="document.getElementById('cn-reference-file').click()">
-                                    <input type="file" id="cn-reference-file" accept="image/*" style="display: none;"
-                                        onchange="handleReferenceUpload(event)">
-                                    <p style="color: #aaa;">📁 点击上传参考图片</p>
-                                    <p class="controlnet-hint">上传真实图片，自动生成 Canny 边缘图</p>
+                    <section class="step">
+                        <h2 class="step-title"><span class="step-num">4</span>参数与生成</h2>
+                        <details class="advanced-block">
+                            <summary>高级参数：推理步数 / 引导强度</summary>
+                            <div class="slider-group" style="margin-top: 12px;">
+                                <div class="slider-item">
+                                    <label class="field-label">推理步数 <span id="cn-steps-value">50</span></label>
+                                    <input type="range" id="cn-steps" min="10" max="100" value="50"
+                                        oninput="document.getElementById('cn-steps-value').textContent = this.value">
+                                </div>
+                                <div class="slider-item">
+                                    <label class="field-label">引导系数 <span id="cn-guidance-value">10.0</span></label>
+                                    <input type="range" id="cn-guidance" min="1" max="20" value="10" step="0.5"
+                                        oninput="document.getElementById('cn-guidance-value').textContent = this.value">
+                                </div>
+                                <div class="slider-item" id="cn-cn-scale-wrap">
+                                    <label class="field-label">ControlNet 强度 <span id="cn-cn-scale-value">1.0</span></label>
+                                    <input type="range" id="cn-cn-scale" min="0" max="2" value="1" step="0.05"
+                                        oninput="document.getElementById('cn-cn-scale-value').textContent = parseFloat(this.value).toFixed(2)">
+                                </div>
+                                <div class="slider-item" id="cn-ip-wrap" style="display: none;">
+                                    <label class="field-label">IP-Adapter 强度 <span id="cn-ip-value">0.60</span></label>
+                                    <input type="range" id="cn-ip-scale" min="0" max="1" value="0.6" step="0.05"
+                                        oninput="document.getElementById('cn-ip-value').textContent = parseFloat(this.value).toFixed(2)">
+                                </div>
+                                <div class="slider-item" id="cn-strength-wrap" style="display: none;">
+                                    <label class="field-label">重绘幅度 (strength) <span id="cn-strength-value">0.55</span></label>
+                                    <input type="range" id="cn-strength" min="0.15" max="0.95" value="0.55" step="0.05"
+                                        oninput="document.getElementById('cn-strength-value').textContent = parseFloat(this.value).toFixed(2)">
                                 </div>
                             </div>
-                            <img id="cn-reference-preview" class="controlnet-preview" alt="参考图预览"
-                                style="display: none;">
-                            <img id="cn-canny-preview" class="controlnet-preview" alt="Canny 边缘图预览"
-                                style="display: none;">
-                        </div>
-                    </div>
-
-                    <button id="cn-generate-btn" onclick="generateImage('cn')" style="width: 100%;">🚀 生成图像</button>
+                        </details>
+                        <p class="hint-text" style="margin-top: 10px;">本页须上传参考图后生成；与「文生图」页独立，使用 SD1.5 底模 + 当前参考模式。</p>
+                        <button type="button" id="cn-generate-btn" class="btn btn-primary" style="margin-top: 12px;"
+                            onclick="generateImage('cn')">生成图像</button>
+                    </section>
                 </div>
 
-                <div class="right-panel">
+                <div class="right-panel" aria-live="polite">
                     <div class="loading" id="cn-generate-loading">
                         <div class="spinner"></div>
-                        <p id="cn-loading-text">正在生成图像，请稍候...</p>
-                        <div class="progress-bar">
-                            <div class="progress-fill" id="cn-progress-fill"></div>
+                        <p id="cn-loading-text">正在生成图像…</p>
+                        <div class="progress-wrap">
+                            <div class="progress-bar" id="cn-progress-bar">
+                                <div class="progress-indeterminate"></div>
+                            </div>
+                            <p class="progress-hint">推理进行中，请耐心等待（可能需数十秒）。</p>
                         </div>
-                        <p class="progress-percent" id="cn-progress-percent">0%</p>
                     </div>
 
                     <div class="result" id="cn-generate-result" style="display: none;">
                         <h3>生成结果</h3>
-                        <img id="cn-result-image" src="" alt="Generated Image">
+                        <img id="cn-result-image" src="" alt="生成图像">
                         <div class="caption-result">
-                            <label>图像描述:</label>
+                            <label class="field-label">图像描述</label>
                             <p id="cn-result-caption"></p>
                         </div>
-                        <div class="clip-result" id="cn-clip-evaluation"
-                            style="display: none; margin-top: 10px; padding: 10px; background: #2c3e50; border-radius: 5px; border: 1px solid #00d2ff;">
-                            <label style="color: #fff;">CLIP 语义相似度:</label>
-                            <p id="cn-clip-quality" style="color: #fff;"></p>
-                            <p id="cn-clip-similarity" style="color: #fff;"></p>
+                        <div class="clip-card" id="cn-clip-evaluation" style="display: none;">
+                            <label class="field-label">CLIP</label>
+                            <p id="cn-clip-quality"></p>
+                            <p id="cn-clip-similarity"></p>
                         </div>
-                        <button id="cn-speak-btn" onclick="speakCaption('cn')"
-                            style="margin-top: 15px; background: linear-gradient(90deg, #e74c3c, #c0392b);">🔊
-                            语音播报</button>
+                        <div class="btn-row">
+                            <button type="button" class="btn btn-ghost" onclick="downloadResultImage('cn')">下载图片</button>
+                            <button type="button" class="btn btn-ghost" onclick="copyResultCaption('cn')">复制描述</button>
+                            <button type="button" class="btn btn-danger-soft" onclick="speakCaption('cn')">朗读描述</button>
+                        </div>
                     </div>
                     <div id="cn-placeholder-result" class="placeholder-result">
-                        <p>生成的图片将显示在这里</p>
+                        <div class="ph-icon" aria-hidden="true">◇</div>
+                        <p>生成结果将显示在此处。请先选择参考模式并上传参考图。</p>
                     </div>
                 </div>
             </div>
         </div>
     </div>
 
-    <script>
-        const API_BASE = window.location.origin;
-        let currentMode = 'sd21';
-        let cnControlnetImageBase64 = null;
-        let cnReferenceImageBase64 = null;
-
-        // 切换模式
-        function switchMode(mode) {
-            currentMode = mode;
-
-            document.getElementById('tab-sd21').classList.remove('active');
-            document.getElementById('tab-controlnet').classList.remove('active');
-            document.getElementById('sd21-panel').classList.remove('active');
-            document.getElementById('controlnet-panel').classList.remove('active');
-
-            if (mode === 'sd21') {
-                document.getElementById('tab-sd21').classList.add('active');
-                document.getElementById('sd21-panel').classList.add('active');
-            } else {
-                document.getElementById('tab-controlnet').classList.add('active');
-                document.getElementById('controlnet-panel').classList.add('active');
-            }
-        }
-
-        // 获取当前模式的ID前缀
-        function getPrefix() {
-            return currentMode === 'sd21' ? 'sd21' : 'cn';
-        }
-
-        // 获取当前模式的元素
-        function getElement(id) {
-            const prefix = getPrefix();
-            return document.getElementById(prefix + '-' + id);
-        }
-
-        // 处理参考图上传 (仅ControlNet模式)
-        async function handleReferenceUpload(event) {
-            const file = event.target.files[0];
-            if (!file) return;
-
-            const prefix = getPrefix();
-
-            const reader = new FileReader();
-            reader.onload = async function (e) {
-                cnReferenceImageBase64 = e.target.result.split(',')[1];
-                document.getElementById(prefix + '-reference-preview').src = e.target.result;
-                document.getElementById(prefix + '-reference-preview').style.display = 'block';
-
-                const formData = new FormData();
-                formData.append('file', file);
-
-                try {
-                    const res = await fetch(`${API_BASE}/process-canny`, {
-                        method: 'POST',
-                        body: formData
-                    });
-
-                    const data = await res.json();
-
-                    document.getElementById(prefix + '-canny-preview').src = data.canny_image;
-                    document.getElementById(prefix + '-canny-preview').style.display = 'block';
-
-                    cnControlnetImageBase64 = data.canny_image.split(',')[1];
-
-                    document.getElementById(prefix + '-upload-container').innerHTML = `
-                        <div style="padding: 15px; background: rgba(155, 89, 182, 0.2); border-radius: 8px; border: 1px solid #9b59b6;">
-                            <p style="color: #9b59b6; margin: 0; font-weight: bold;">✅ 已上传参考图片</p>
-                            <p style="color: #aaa; font-size: 12px; margin-top: 5px;">图片已锁定，将基于此Canny图生成</p>
-                        </div>
-                    `;
-
-                    alert('✅ Canny 边缘图已生成！点击"生成图像"按钮开始生成。');
-                } catch (e) {
-                    alert('处理图片失败: ' + e.message);
-                }
-            };
-            reader.readAsDataURL(file);
-        }
-
-        async function enhancePrompt(mode) {
-            const prefix = mode;
-            const prompt = document.getElementById(prefix + '-prompt').value.trim();
-            if (!prompt) {
-                alert('请输入提示词');
-                return;
-            }
-
-            const btn = document.getElementById(prefix + '-enhance-btn');
-            const loading = document.getElementById(prefix + '-enhance-loading');
-            const section = document.getElementById(prefix + '-enhanced-section');
-
-            btn.disabled = true;
-            loading.style.display = 'block';
-            section.style.display = 'none';
-
-            try {
-                const res = await fetch(`${API_BASE}/enhance`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ prompt: prompt })
-                });
-
-                let data;
-                try {
-                    data = await res.json();
-                } catch (_) {
-                    const text = await res.text();
-                    throw new Error(`后端返回非JSON响应: ${text?.slice(0, 200) || 'empty response'}`);
-                }
-
-                if (!res.ok) {
-                    throw new Error(data?.detail || data?.error || `HTTP ${res.status}`);
-                }
-
-                if (!data.enhanced_prompt) {
-                    throw new Error('后端未返回扩充提示词（enhanced_prompt）');
-                }
-
-                document.getElementById(prefix + '-enhanced-prompt').value = data.enhanced_prompt;
-                section.style.display = 'block';
-            } catch (e) {
-                alert('扩充提示词失败: ' + e.message);
-            } finally {
-                btn.disabled = false;
-                loading.style.display = 'none';
-            }
-        }
-
-        async function generateImage(mode) {
-            const prefix = mode;
-            const prompt = document.getElementById(prefix + '-prompt').value.trim();
-            if (!prompt) {
-                alert('请输入提示词');
-                return;
-            }
-
-            const btn = document.getElementById(prefix + '-generate-btn');
-            const loading = document.getElementById(prefix + '-generate-loading');
-            const result = document.getElementById(prefix + '-generate-result');
-            const placeholder = document.getElementById(prefix + '-placeholder-result');
-
-            btn.disabled = true;
-            loading.classList.add('active');
-            result.style.display = 'none';
-            placeholder.style.display = 'none';
-
-            const numSteps = parseInt(document.getElementById(prefix + '-steps').value);
-
-            const progressFill = document.getElementById(prefix + '-progress-fill');
-            const progressPercent = document.getElementById(prefix + '-progress-percent');
-            let progress = 0;
-            const progressInterval = setInterval(() => {
-                progress += 100 / (numSteps * 2.5);
-                if (progress > 95) progress = 95;
-                progressFill.style.width = progress + '%';
-                progressPercent.textContent = Math.round(progress) + '%';
-            }, 1000);
-
-            try {
-                const enhancedPrompt = document.getElementById(prefix + '-enhanced-prompt').value.trim();
-                let requestBody = {
-                    prompt: prompt,
-                    num_inference_steps: parseInt(document.getElementById(prefix + '-steps').value),
-                    guidance_scale: parseFloat(document.getElementById(prefix + '-guidance').value)
-                };
-
-                if (enhancedPrompt) {
-                    requestBody.enhanced_prompt = enhancedPrompt;
-                }
-
-                if (mode === 'sd21') {
-                    const backend = document.getElementById('sd21-backend').value;
-                    if (backend === 'sd21') {
-                        requestBody.generation_mode = 'sd21';
-                    } else {
-                        requestBody.generation_mode = 'sd15';
-                        requestBody.sd15_style = backend;
-                    }
-                }
-
-                let res;
-
-                if (mode === 'cn' && cnControlnetImageBase64) {
-                    let controlnetBody = {
-                        prompt: prompt,
-                        control_image: cnControlnetImageBase64,
-                        num_inference_steps: parseInt(document.getElementById(prefix + '-steps').value),
-                        guidance_scale: parseFloat(document.getElementById(prefix + '-guidance').value),
-                        controlnet_conditioning_scale: 1.0
-                    };
-
-                    if (enhancedPrompt) {
-                        controlnetBody.enhanced_prompt = enhancedPrompt;
-                    }
-
-                    res = await fetch(`${API_BASE}/generate-controlnet`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(controlnetBody)
-                    });
-                } else {
-                    res = await fetch(`${API_BASE}/generate`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(requestBody)
-                    });
-                }
-
-                let data;
-                try {
-                    data = await res.json();
-                } catch (_) {
-                    const text = await res.text();
-                    throw new Error(`后端返回非JSON响应: ${text?.slice(0, 200) || 'empty response'}`);
-                }
-
-                if (!res.ok) {
-                    throw new Error(data?.detail || data?.error || `HTTP ${res.status}`);
-                }
-
-                if (!data.image) {
-                    throw new Error('后端未返回图像数据（image）');
-                }
-
-                clearInterval(progressInterval);
-                progressFill.style.width = '100%';
-                progressPercent.textContent = '100%';
-
-                setTimeout(() => {
-                    loading.classList.remove('active');
-                }, 500);
-
-                document.getElementById(prefix + '-result-image').src = data.image;
-                document.getElementById(prefix + '-result-caption').textContent = data.caption;
-
-                if (data.used_num_steps && data.used_guidance) {
-                    document.getElementById(prefix + '-steps').value = data.used_num_steps;
-                    document.getElementById(prefix + '-steps-value').textContent = data.used_num_steps;
-                    document.getElementById(prefix + '-guidance').value = data.used_guidance;
-                    document.getElementById(prefix + '-guidance-value').textContent = data.used_guidance;
-                }
-
-                if (data.clip_evaluation) {
-                    const clip = data.clip_evaluation;
-                    document.getElementById(prefix + '-clip-quality').textContent = `📊 CLIP 语义相似度: ${(clip.similarity_score * 100).toFixed(1)}%`;
-                    document.getElementById(prefix + '-clip-similarity').textContent = `💡 ${clip.interpretation}`;
-                    document.getElementById(prefix + '-clip-evaluation').style.display = 'block';
-                }
-
-                document.getElementById(prefix + '-generate-result').style.display = 'block';
-                document.getElementById(prefix + '-placeholder-result').style.display = 'none';
-
-                // TTS (默认启用)
-                speakCaption(prefix);
-            } catch (e) {
-                alert('生成失败: ' + e.message);
-            } finally {
-                btn.disabled = false;
-                loading.classList.remove('active');
-            }
-        }
-
-        function speakCaption(mode) {
-            const prefix = mode;
-            const caption = document.getElementById(prefix + '-result-caption').textContent;
-            if (caption) {
-                const utterance = new SpeechSynthesisUtterance(caption);
-                utterance.lang = 'zh-CN';
-                utterance.rate = 1.0;
-                speechSynthesis.speak(utterance);
-            }
-        }
-
-    </script>
+    <div id="toast-region" aria-live="polite"></div>
+    <script src="/static/js/app.js" defer></script>
 </body>
 
 </html>

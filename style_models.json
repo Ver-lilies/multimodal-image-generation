@@ -1,9 +1,10 @@
 {
   "sd15_size": 512,
-  "counterfeit": {
-    "hf_repo": "gsdf/Counterfeit-V3.0",
-    "weight_file": "Counterfeit-V3.0_fp16.safetensors",
-    "local_fallback": "models/checkpoints/Counterfeit-V3.0_fp16.safetensors"
+  "anime": {
+    "hf_repo": "WarriorMama777/OrangeMixs",
+    "weight_file": "Models/AbyssOrangeMix3/AOM3A3_orangemixs.safetensors",
+    "local_fallback": "models/checkpoints/AOM3A3_orangemixs.safetensors",
+    "clip_skip": 2
   },
   "dreamshaper": {
     "hf_repo": "Lykon/dreamshaper-8",

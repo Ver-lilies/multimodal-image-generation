@@ -15,18 +15,53 @@ LARGE_MODELS = [
     "lllyasviel/sd-controlnet-canny",
 ]
 
+# SD1.5 + 参考模式：按需任选子集；Annotators 供 Depth/OpenPose/HED/Lineart 预处理
+REFERENCE_SNAPSHOTS = [
+    "Lykon/dreamshaper-8",
+    "lllyasviel/sd-controlnet-depth",
+    "lllyasviel/sd-controlnet-openpose",
+    "lllyasviel/control_v11p_sd15_lineart",
+    "lllyasviel/sd-controlnet-hed",
+    "lllyasviel/sd-controlnet-canny",
+    "lllyasviel/Annotators",
+]
+
+REFERENCE_SINGLE_FILES = [
+    ("h94/IP-Adapter", "models/ip-adapter_sd15_light_v11.bin"),
+]
+
 # SD1.5 风格：DreamShaper + 油画 LoRA 仓库（snapshot 整库）
 SD15_STYLE_MODELS = [
     "Lykon/dreamshaper-8",
     "jqlive/sd15-digital-oil-arcane",
 ]
 
-# 仅下载单文件：避免 snapshot 拉取 Counterfeit 全量 / 水彩仓库内超长文件名预览图（Windows 下易 symlink 失败）
+# 仅下载单文件：避免 snapshot 拉取整库 / 水彩仓库内超长文件名预览图（Windows 下易 symlink 失败）
 SD15_SINGLE_FILES = [
-    ("gsdf/Counterfeit-V3.0", "Counterfeit-V3.0_fp16.safetensors"),
+    (
+        "WarriorMama777/OrangeMixs",
+        "Models/AbyssOrangeMix3/AOM3A3_orangemixs.safetensors",
+    ),
     ("fladdict/watercolor", "fladdict-watercolor-sd-1-5.safetensors"),
     ("jordanhilado/sd-1-5-sketch-lora", "pytorch_lora_weights.safetensors"),
 ]
+
+
+def _extend_unique(dest: list, items: list) -> None:
+    seen = set(dest)
+    for x in items:
+        if x not in seen:
+            seen.add(x)
+            dest.append(x)
+
+
+def webapp_model_ids() -> list[str]:
+    """文生图 + SD1.5 参考模式（含 controlnet-aux 用的 Annotators），不含可选二次元/DreamShaper 风格包。"""
+    out: list[str] = []
+    _extend_unique(out, MEDIUM_MODELS)
+    _extend_unique(out, LARGE_MODELS)
+    _extend_unique(out, REFERENCE_SNAPSHOTS)
+    return out
 
 
 def hf_download_env() -> dict[str, str]:
@@ -105,22 +140,36 @@ def main() -> int:
     parser.add_argument("--timeout", type=int, default=600, help="Timeout per model in seconds")
     parser.add_argument(
         "--group",
-        choices=["medium", "large", "all", "sd15_styles"],
+        choices=["medium", "large", "all", "sd15_styles", "reference", "webapp"],
         default="medium",
-        help="sd15_styles: Counterfeit-V3, DreamShaper, watercolor/oil/sketch LoRA 仓库",
+        help=(
+            "webapp: 推荐一键（medium+large+reference，含 Annotators 与 IP-Adapter 单文件）；"
+            "sd15_styles: AOM3A3、DreamShaper、水彩/素描 LoRA 等；"
+            "reference: 仅参考模式相关快照与 IP-Adapter 文件"
+        ),
     )
     args = parser.parse_args()
 
     token = os.getenv("HF_TOKEN") or None
     print("HF_TOKEN exists:", bool(token), flush=True)
 
-    models = []
-    if args.group in ("medium", "all"):
+    models: list[str] = []
+    if args.group == "webapp":
+        models = webapp_model_ids()
+    elif args.group in ("medium", "all"):
         models.extend(MEDIUM_MODELS)
     if args.group in ("large", "all"):
-        models.extend(LARGE_MODELS)
+        for m in LARGE_MODELS:
+            if m not in models:
+                models.append(m)
     if args.group in ("sd15_styles", "all"):
-        models.extend(SD15_STYLE_MODELS)
+        for m in SD15_STYLE_MODELS:
+            if m not in models:
+                models.append(m)
+    if args.group in ("reference", "all"):
+        for m in REFERENCE_SNAPSHOTS:
+            if m not in models:
+                models.append(m)
 
     ok = 0
     total = len(models)
@@ -130,6 +179,12 @@ def main() -> int:
 
     if args.group in ("sd15_styles", "all"):
         for repo_id, fname in SD15_SINGLE_FILES:
+            total += 1
+            if run_one_file(args.python, repo_id, fname, args.timeout, token):
+                ok += 1
+
+    if args.group in ("reference", "all", "webapp"):
+        for repo_id, fname in REFERENCE_SINGLE_FILES:
             total += 1
             if run_one_file(args.python, repo_id, fname, args.timeout, token):
                 ok += 1

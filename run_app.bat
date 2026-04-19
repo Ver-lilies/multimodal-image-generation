@@ -2,7 +2,7 @@
 setlocal EnableExtensions
 cd /d "%~dp0"
 
-rem 可选：在此行下面取消注释并填写，可强制指定解释器
+rem Optional: uncomment and set to force Python path
 rem set "PYTHON=C:\path\to\python.exe"
 
 if not defined PYTHON (
@@ -15,18 +15,18 @@ if not defined PYTHON (
   where python >nul 2>&1 && set "PYTHON=python"
 )
 if not defined PYTHON (
-  echo 未找到 Python。请在 run_app.bat 顶部设置 PYTHON= 完整路径。
+  echo Python not found. Edit run_app.bat and set PYTHON= to your python.exe path.
   pause
   exit /b 1
 )
 
-echo 使用: "%PYTHON%"
-echo 后端 + 页面: http://127.0.0.1:8000  ^(index.html 与 API 同端口^)
+echo Using: "%PYTHON%"
+echo Server: http://127.0.0.1:8000  ^(index.html + API on same port^)
 echo.
 
 start "multimodal-api" /D "%~dp0" "%PYTHON%" "%~dp0api_server.py"
 timeout /t 3 /nobreak >nul
 start "" "http://127.0.0.1:8000"
 
-echo 已打开浏览器；标题为 multimodal-api 的窗口为服务进程，关闭即停止。
+echo Browser launched. Close the window titled "multimodal-api" to stop the server.
 pause
