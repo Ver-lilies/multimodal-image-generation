@@ -383,6 +383,18 @@
                         <textarea id="sd21-prompt" placeholder="输入你的创意，例如：一只可爱的猫咪..."></textarea>
                     </div>
 
+                    <div class="input-group">
+                        <label>生成后端（与 SD 2.1 相同流程：翻译 → 生成 → 描述 → CLIP；SD1.5 为 512×512）</label>
+                        <select id="sd21-backend" style="width: 100%; padding: 10px; border-radius: 8px; background: rgba(255,255,255,0.08); color: #fff; border: 1px solid rgba(255,255,255,0.2);">
+                            <option value="sd21">SD 2.1 基础（768×768）</option>
+                            <option value="anime">SD 1.5 二次元（Counterfeit-V3）</option>
+                            <option value="watercolor">SD 1.5 水彩（DreamShaper + LoRA）</option>
+                            <option value="oil">SD 1.5 油画风（DreamShaper + LoRA）</option>
+                            <option value="realistic">SD 1.5 写实（DreamShaper）</option>
+                            <option value="sketch">SD 1.5 素描（DreamShaper + LoRA）</option>
+                        </select>
+                    </div>
+
                     <button id="sd21-enhance-btn" onclick="enhancePrompt('sd21')"
                         style="background: linear-gradient(90deg, #9b59b6, #8e44ad); width: 100%; margin-bottom: 20px;">✨
                         扩充提示词</button>
@@ -714,6 +726,16 @@
 
                 if (enhancedPrompt) {
                     requestBody.enhanced_prompt = enhancedPrompt;
+                }
+
+                if (mode === 'sd21') {
+                    const backend = document.getElementById('sd21-backend').value;
+                    if (backend === 'sd21') {
+                        requestBody.generation_mode = 'sd21';
+                    } else {
+                        requestBody.generation_mode = 'sd15';
+                        requestBody.sd15_style = backend;
+                    }
                 }
 
                 let res;

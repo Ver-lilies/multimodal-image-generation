@@ -15,6 +15,52 @@ LARGE_MODELS = [
     "lllyasviel/sd-controlnet-canny",
 ]
 
+# SD1.5 风格：DreamShaper + 油画 LoRA 仓库（snapshot 整库）
+SD15_STYLE_MODELS = [
+    "Lykon/dreamshaper-8",
+    "jqlive/sd15-digital-oil-arcane",
+]
+
+# 仅下载单文件：避免 snapshot 拉取 Counterfeit 全量 / 水彩仓库内超长文件名预览图（Windows 下易 symlink 失败）
+SD15_SINGLE_FILES = [
+    ("gsdf/Counterfeit-V3.0", "Counterfeit-V3.0_fp16.safetensors"),
+    ("fladdict/watercolor", "fladdict-watercolor-sd-1-5.safetensors"),
+    ("jordanhilado/sd-1-5-sketch-lora", "pytorch_lora_weights.safetensors"),
+]
+
+
+def hf_download_env() -> dict[str, str]:
+    """Merge env for child Python: longer Hub timeouts (default 10s often fails on slow links)."""
+    env = os.environ.copy()
+    env.setdefault("HF_HUB_ETAG_TIMEOUT", "120")
+    env.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "300")
+    return env
+
+
+def run_one_file(py_exe: str, repo_id: str, filename: str, timeout_sec: int, token: str | None) -> bool:
+    code = (
+        "from huggingface_hub import hf_hub_download\n"
+        f"p = hf_hub_download(repo_id={repo_id!r}, filename={filename!r}, token={token!r})\n"
+        "print('FILE_PATH=' + p)\n"
+    )
+    cmd = [py_exe, "-u", "-c", code]
+    print(f"\n=== Download file: {repo_id}/{filename} | timeout={timeout_sec}s ===", flush=True)
+    try:
+        result = subprocess.run(
+            cmd,
+            timeout=timeout_sec,
+            check=False,
+            env=hf_download_env(),
+        )
+    except subprocess.TimeoutExpired:
+        print(f"TIMEOUT: {repo_id}/{filename}", flush=True)
+        return False
+    if result.returncode == 0:
+        print(f"OK: {repo_id}/{filename}", flush=True)
+        return True
+    print(f"FAIL: {repo_id}/{filename} | returncode={result.returncode}", flush=True)
+    return False
+
 
 def run_one(py_exe: str, model_id: str, timeout_sec: int, token: str | None) -> bool:
     code = (
@@ -34,6 +80,7 @@ def run_one(py_exe: str, model_id: str, timeout_sec: int, token: str | None) -> 
             cmd,
             timeout=timeout_sec,
             check=False,
+            env=hf_download_env(),
         )
     except subprocess.TimeoutExpired:
         print(f"TIMEOUT: {model_id} 超过 {timeout_sec}s，已中断", flush=True)
@@ -56,7 +103,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Step-by-step HF model downloader with timeout")
     parser.add_argument("--python", required=True, help="Python executable path, e.g. E:/Course/Statistic_L/.venv-gpu/Scripts/python.exe")
     parser.add_argument("--timeout", type=int, default=600, help="Timeout per model in seconds")
-    parser.add_argument("--group", choices=["medium", "large", "all"], default="medium")
+    parser.add_argument(
+        "--group",
+        choices=["medium", "large", "all", "sd15_styles"],
+        default="medium",
+        help="sd15_styles: Counterfeit-V3, DreamShaper, watercolor/oil/sketch LoRA 仓库",
+    )
     args = parser.parse_args()
 
     token = os.getenv("HF_TOKEN") or None
@@ -67,14 +119,23 @@ def main() -> int:
         models.extend(MEDIUM_MODELS)
     if args.group in ("large", "all"):
         models.extend(LARGE_MODELS)
+    if args.group in ("sd15_styles", "all"):
+        models.extend(SD15_STYLE_MODELS)
 
     ok = 0
+    total = len(models)
     for m in models:
         if run_one(args.python, m, args.timeout, token):
             ok += 1
 
-    print(f"\nSummary: {ok}/{len(models)} success", flush=True)
-    return 0 if ok == len(models) else 2
+    if args.group in ("sd15_styles", "all"):
+        for repo_id, fname in SD15_SINGLE_FILES:
+            total += 1
+            if run_one_file(args.python, repo_id, fname, args.timeout, token):
+                ok += 1
+
+    print(f"\nSummary: {ok}/{total} success", flush=True)
+    return 0 if ok == total else 2
 
 
 if __name__ == "__main__":

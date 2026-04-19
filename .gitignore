@@ -16,3 +16,5 @@ venv/
 node_modules/
 .DS_Store
 *.log
+# 本地放置的 SD 权重 / LoRA（见 style_models.json 中 local_fallback）
+models/

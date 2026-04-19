@@ -1,5 +1,7 @@
 import os
 import sys
+import json
+import gc
 import torch
 import base64
 import io
@@ -29,6 +31,9 @@ for _stream in (sys.stdout, sys.stderr):
 HF_TOKEN = os.getenv('HF_TOKEN', '')
 DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY', '')
 LOCAL_FILES_ONLY = os.getenv('LOCAL_FILES_ONLY', 'false').lower() == 'true'
+# Unset: same as before — allow Hub when LOCAL_FILES_ONLY is false. Set to false to use cache-only (fast fail if Hub is blocked).
+_allow_raw = os.getenv("ALLOW_HF_HUB_DOWNLOAD")
+ALLOW_HF_HUB_DOWNLOAD = (not LOCAL_FILES_ONLY) if _allow_raw is None else (_allow_raw.lower() == "true")
 
 if not HF_TOKEN:
     raise ValueError("HF_TOKEN 环境变量未设置！请在 .env 文件中配置或设置环境变量")
@@ -37,6 +42,7 @@ if not DEEPSEEK_API_KEY:
 
 print(f"🔐 API Keys loaded: HF_TOKEN={'✓' if HF_TOKEN else '✗'}, DEEPSEEK={'✓' if DEEPSEEK_API_KEY else '✗'}")
 print(f"📁 LOCAL_FILES_ONLY: {LOCAL_FILES_ONLY}")
+print(f"🌐 ALLOW_HF_HUB_DOWNLOAD: {ALLOW_HF_HUB_DOWNLOAD}")
 
 app = FastAPI(title="Multimodal API")
 
@@ -54,12 +60,38 @@ translator = None
 clip_alignment = None
 controlnet = None
 
+_PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(_PROJECT_DIR, "style_models.json"), encoding="utf-8") as _style_file:
+    STYLE_CONFIG = json.load(_style_file)
+
+sd15_anime_pipe = None
+sd15_dreamshaper_pipe = None
+sd15_dreamshaper_lora_style = None
+
+
+def _hf_local_first(load, desc: str):
+    """Prefer HF disk cache only; optional Hub access only when ALLOW_HF_HUB_DOWNLOAD.
+    `load` must be a one-arg callable: bool -> model (e.g. lambda lfo: from_pretrained(..., local_files_only=lfo)).
+    """
+    try:
+        return load(True)
+    except Exception as e:
+        if LOCAL_FILES_ONLY or not ALLOW_HF_HUB_DOWNLOAD:
+            raise RuntimeError(
+                f"{desc}: not in Hugging Face cache. Pre-download the model, or set "
+                "ALLOW_HF_HUB_DOWNLOAD=true (requires a working connection to huggingface.co)."
+            ) from e
+        return load(False)
+
+
 class GenerateRequest(BaseModel):
     prompt: str
     enhanced_prompt: str | None = None
     num_inference_steps: int = 50
     guidance_scale: float = 10.0
     controlnet_image: str | None = None
+    generation_mode: str = "sd21"
+    sd15_style: str | None = None
 
 class ControlNetGenerateRequest(BaseModel):
     prompt: str
@@ -112,34 +144,82 @@ def enhance_prompt(text: str) -> str:
     print(f"Enhanced: '{text}' -> '{enhanced}'")
     return enhanced
 
+def _translate_zh_to_en_deepseek(text: str) -> str:
+    import requests
+    url = "https://api.deepseek.com/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    data = {
+        "model": "deepseek-chat",
+        "messages": [
+            {
+                "role": "system",
+                "content": "You translate Chinese to English for image generation prompts. Output only the English translation, no quotes or explanation.",
+            },
+            {"role": "user", "content": text},
+        ],
+        "temperature": 0.3,
+        "max_tokens": 512,
+    }
+    response = requests.post(url, headers=headers, json=data, timeout=60)
+    response.raise_for_status()
+    out = response.json()["choices"][0]["message"]["content"].strip()
+    return out
+
 def get_translator():
     global translator
-    if translator is None:
-        from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-        print("Loading Translator (zh->en)...")
-        tokenizer = AutoTokenizer.from_pretrained("Helsinki-NLP/opus-mt-zh-en", token=HF_TOKEN, local_files_only=LOCAL_FILES_ONLY)
-        model = AutoModelForSeq2SeqLM.from_pretrained("Helsinki-NLP/opus-mt-zh-en", token=HF_TOKEN, local_files_only=LOCAL_FILES_ONLY)
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        model = model.to(device)
-        translator = {"tokenizer": tokenizer, "model": model, "device": device}
-        print(f"Translator loaded on {device}!")
+    if translator is not None:
+        return translator
+    from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+
+    model_id = "Helsinki-NLP/opus-mt-zh-en"
+    print("Loading Translator (zh->en)...")
+    tokenizer, model = None, None
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_id, token=HF_TOKEN, local_files_only=True)
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_id, token=HF_TOKEN, local_files_only=True)
+    except Exception:
+        if not LOCAL_FILES_ONLY and ALLOW_HF_HUB_DOWNLOAD:
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(model_id, token=HF_TOKEN, local_files_only=False)
+                model = AutoModelForSeq2SeqLM.from_pretrained(model_id, token=HF_TOKEN, local_files_only=False)
+            except Exception as ex:
+                print(f"Helsinki model unavailable ({ex!r}); using DeepSeek API for zh->en.")
+                translator = {"mode": "deepseek"}
+                return translator
+        else:
+            print("Helsinki model not in local cache; using DeepSeek API for zh->en.")
+            translator = {"mode": "deepseek"}
+            return translator
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = model.to(device)
+    translator = {"tokenizer": tokenizer, "model": model, "device": device, "mode": "local"}
+    print(f"Translator loaded on {device}!")
     return translator
 
 def translate_to_english(text: str) -> str:
     has_chinese = any('\u4e00' <= char <= '\u9fff' for char in text)
-    if has_chinese:
-        trans = get_translator()
-        inputs = trans["tokenizer"](text, return_tensors="pt", padding=True).to(trans["device"])
-        with torch.no_grad():
-            outputs = trans["model"].generate(**inputs, max_length=512)
-        translated = trans["tokenizer"].decode(outputs[0], skip_special_tokens=True)
-        print(f"Translated: '{text}' -> '{translated}'")
+    if not has_chinese:
+        return text
+    trans = get_translator()
+    if trans.get("mode") == "deepseek":
+        translated = _translate_zh_to_en_deepseek(text)
+        print(f"Translated (DeepSeek): '{text}' -> '{translated}'")
         return translated
-    return text
+    inputs = trans["tokenizer"](text, return_tensors="pt", padding=True).to(trans["device"])
+    with torch.no_grad():
+        outputs = trans["model"].generate(**inputs, max_length=512)
+    translated = trans["tokenizer"].decode(outputs[0], skip_special_tokens=True)
+    print(f"Translated: '{text}' -> '{translated}'")
+    return translated
 
 def get_generator():
     global image_generator
     if image_generator is None:
+        unload_all_sd15()
         import logging
         logging.getLogger("diffusers").setLevel(logging.WARNING)
         logging.getLogger("torch").setLevel(logging.WARNING)
@@ -149,13 +229,16 @@ def get_generator():
         from io import StringIO
         
         print("Loading Stable Diffusion 2.1...")
-        image_generator = StableDiffusionPipeline.from_pretrained(
+        image_generator = _hf_local_first(
+            lambda lfo: StableDiffusionPipeline.from_pretrained(
+                "sd2-community/stable-diffusion-2-1-base",
+                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                safety_checker=None,
+                requires_safety_checker=False,
+                token=HF_TOKEN,
+                local_files_only=lfo,
+            ),
             "sd2-community/stable-diffusion-2-1-base",
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-            safety_checker=None,
-            requires_safety_checker=False,
-            token=HF_TOKEN,
-            local_files_only=LOCAL_FILES_ONLY
         )
         image_generator.scheduler = DDIMScheduler.from_config(image_generator.scheduler.config)
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -168,8 +251,18 @@ def get_captioner():
     if captioner is None:
         from transformers import BlipProcessor, BlipForConditionalGeneration
         print("Loading BLIP Large...")
-        processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-large", token=HF_TOKEN, local_files_only=LOCAL_FILES_ONLY)
-        model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-large", token=HF_TOKEN, local_files_only=LOCAL_FILES_ONLY)
+        processor = _hf_local_first(
+            lambda lfo: BlipProcessor.from_pretrained(
+                "Salesforce/blip-image-captioning-large", token=HF_TOKEN, local_files_only=lfo
+            ),
+            "Salesforce/blip-image-captioning-large (processor)",
+        )
+        model = _hf_local_first(
+            lambda lfo: BlipForConditionalGeneration.from_pretrained(
+                "Salesforce/blip-image-captioning-large", token=HF_TOKEN, local_files_only=lfo
+            ),
+            "Salesforce/blip-image-captioning-large (model)",
+        )
         device = "cuda" if torch.cuda.is_available() else "cpu"
         model = model.to(device)
         captioner = {"processor": processor, "model": model}
@@ -181,8 +274,18 @@ def get_clip():
     if clip_alignment is None:
         from transformers import CLIPProcessor, CLIPModel
         print("Loading CLIP for image-text similarity...")
-        clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32", token=HF_TOKEN, local_files_only=LOCAL_FILES_ONLY)
-        processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32", token=HF_TOKEN, local_files_only=LOCAL_FILES_ONLY)
+        clip_model = _hf_local_first(
+            lambda lfo: CLIPModel.from_pretrained(
+                "openai/clip-vit-base-patch32", token=HF_TOKEN, local_files_only=lfo
+            ),
+            "openai/clip-vit-base-patch32 (model)",
+        )
+        processor = _hf_local_first(
+            lambda lfo: CLIPProcessor.from_pretrained(
+                "openai/clip-vit-base-patch32", token=HF_TOKEN, local_files_only=lfo
+            ),
+            "openai/clip-vit-base-patch32 (processor)",
+        )
         device = "cuda" if torch.cuda.is_available() else "cpu"
         clip_model = clip_model.to(device)
         clip_model.eval()
@@ -220,26 +323,34 @@ def compute_image_text_similarity(prompt: str, image: Image.Image):
 def get_controlnet():
     global controlnet
     if controlnet is None:
+        unload_all_sd15()
         from diffusers import StableDiffusionControlNetPipeline, ControlNetModel
         print("Loading ControlNet (Canny)...")
         device = "cuda" if torch.cuda.is_available() else "cpu"
         
-        controlnet = ControlNetModel.from_pretrained(
+        controlnet = _hf_local_first(
+            lambda lfo: ControlNetModel.from_pretrained(
+                "lllyasviel/sd-controlnet-canny",
+                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+                token=HF_TOKEN,
+                local_files_only=lfo,
+            ),
             "lllyasviel/sd-controlnet-canny",
-            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-            token=HF_TOKEN,
-            local_files_only=LOCAL_FILES_ONLY
         )
-        
+
         print("Loading SD 1.5 base model...")
-        pipe = StableDiffusionControlNetPipeline.from_pretrained(
-            "runwayml/stable-diffusion-v1-5",
-            controlnet=controlnet,
-            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-            safety_checker=None,
-            requires_safety_checker=False,
-            token=HF_TOKEN,
-            local_files_only=LOCAL_FILES_ONLY
+        cn = controlnet
+        pipe = _hf_local_first(
+            lambda lfo: StableDiffusionControlNetPipeline.from_pretrained(
+                "runwayml/stable-diffusion-v1-5",
+                controlnet=cn,
+                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+                safety_checker=None,
+                requires_safety_checker=False,
+                token=HF_TOKEN,
+                local_files_only=lfo,
+            ),
+            "runwayml/stable-diffusion-v1-5 (ControlNet pipeline)",
         )
         pipe = pipe.to(device)
         
@@ -249,6 +360,234 @@ def get_controlnet():
         }
         print(f"ControlNet loaded on {device}!")
     return controlnet
+
+def _unload_sd21_for_sd15() -> None:
+    global image_generator
+    if image_generator is not None:
+        del image_generator
+        image_generator = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+def unload_sd15_anime() -> None:
+    global sd15_anime_pipe
+    if sd15_anime_pipe is not None:
+        del sd15_anime_pipe
+        sd15_anime_pipe = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+def unload_sd15_dreamshaper_full() -> None:
+    global sd15_dreamshaper_pipe, sd15_dreamshaper_lora_style
+    sd15_dreamshaper_lora_style = None
+    if sd15_dreamshaper_pipe is not None:
+        try:
+            sd15_dreamshaper_pipe.unload_lora_weights()
+        except Exception as e:
+            print(f"unload_lora_weights: {e}")
+        del sd15_dreamshaper_pipe
+        sd15_dreamshaper_pipe = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+def unload_all_sd15() -> None:
+    unload_sd15_anime()
+    unload_sd15_dreamshaper_full()
+
+def _resolve_local_path(rel: str | None) -> str | None:
+    if not rel:
+        return None
+    p = os.path.join(_PROJECT_DIR, rel.replace("/", os.sep))
+    return p if os.path.isfile(p) else None
+
+def _get_lora_weight_file_path(meta: dict) -> str:
+    """DreamShaper 风格 LoRA：优先项目内 local_fallback，否则 HF 缓存或按需下载。"""
+    local = _resolve_local_path(meta.get("local_fallback"))
+    if local:
+        return local
+    from huggingface_hub import hf_hub_download
+
+    repo = meta["hf_repo"]
+    fname = meta["weight_name"]
+
+    def _dl(lfo: bool):
+        return hf_hub_download(repo, fname, token=HF_TOKEN or None, local_files_only=lfo)
+
+    try:
+        return _dl(True)
+    except Exception as e:
+        if LOCAL_FILES_ONLY or not ALLOW_HF_HUB_DOWNLOAD:
+            raise RuntimeError(
+                f"LoRA 不在 HF 缓存 ({repo} / {fname})。请先下载或设置 ALLOW_HF_HUB_DOWNLOAD=true。"
+            ) from e
+        return _dl(False)
+
+def _get_counterfeit_single_file_path() -> str:
+    cf = STYLE_CONFIG["counterfeit"]
+    local = _resolve_local_path(cf.get("local_fallback"))
+    if local:
+        return local
+    from huggingface_hub import hf_hub_download
+
+    def _dl(lfo: bool):
+        return hf_hub_download(
+            cf["hf_repo"],
+            cf["weight_file"],
+            token=HF_TOKEN or None,
+            local_files_only=lfo,
+        )
+
+    try:
+        return _dl(True)
+    except Exception as e:
+        if LOCAL_FILES_ONLY or not ALLOW_HF_HUB_DOWNLOAD:
+            raise RuntimeError(
+                f"Counterfeit weights not in HF cache ({cf['hf_repo']} / {cf['weight_file']}). "
+                "Pre-download or set ALLOW_HF_HUB_DOWNLOAD=true."
+            ) from e
+        return _dl(False)
+
+def get_sd15_anime_pipe():
+    global sd15_anime_pipe
+    unload_sd15_dreamshaper_full()
+    _unload_sd21_for_sd15()
+    if sd15_anime_pipe is not None:
+        return sd15_anime_pipe
+    from diffusers import StableDiffusionPipeline
+    path = _get_counterfeit_single_file_path()
+    print(f"Loading Counterfeit SD1.5 (anime)...")
+    sd15_anime_pipe = _hf_local_first(
+        lambda lfo: StableDiffusionPipeline.from_single_file(
+            path,
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            safety_checker=None,
+            requires_safety_checker=False,
+            local_files_only=lfo,
+        ),
+        "Counterfeit SD1.5 (single-file)",
+    )
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    sd15_anime_pipe = sd15_anime_pipe.to(device)
+    if hasattr(sd15_anime_pipe, "enable_vae_tiling"):
+        sd15_anime_pipe.enable_vae_tiling()
+    print("Counterfeit SD1.5 loaded.")
+    return sd15_anime_pipe
+
+def get_sd15_dreamshaper_base():
+    global sd15_dreamshaper_pipe
+    if sd15_dreamshaper_pipe is None:
+        import logging
+        logging.getLogger("diffusers").setLevel(logging.WARNING)
+        from diffusers import StableDiffusionPipeline
+        repo = STYLE_CONFIG["dreamshaper"]["hf_repo"]
+        print(f"Loading DreamShaper ({repo})...")
+        sd15_dreamshaper_pipe = _hf_local_first(
+            lambda lfo: StableDiffusionPipeline.from_pretrained(
+                repo,
+                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                safety_checker=None,
+                requires_safety_checker=False,
+                token=HF_TOKEN,
+                local_files_only=lfo,
+            ),
+            f"DreamShaper ({repo})",
+        )
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        sd15_dreamshaper_pipe = sd15_dreamshaper_pipe.to(device)
+        if hasattr(sd15_dreamshaper_pipe, "enable_vae_tiling"):
+            sd15_dreamshaper_pipe.enable_vae_tiling()
+        print("DreamShaper loaded.")
+    return sd15_dreamshaper_pipe
+
+def _apply_lora_to_dreamshaper(style_key: str):
+    global sd15_dreamshaper_lora_style
+    meta = STYLE_CONFIG["loras"][style_key]
+    pipe = get_sd15_dreamshaper_base()
+    if sd15_dreamshaper_lora_style == style_key:
+        return pipe, meta
+    if sd15_dreamshaper_lora_style is not None:
+        try:
+            pipe.unload_lora_weights()
+        except Exception as e:
+            print(f"unload_lora_weights: {e}")
+        sd15_dreamshaper_lora_style = None
+    adapter = meta["adapter_name"]
+    scale = float(meta.get("scale", 0.8))
+    print(f"Loading LoRA adapter={adapter} ({style_key})...")
+    if meta.get("prepend_unet_prefix"):
+        # 部分旧版 LoRA 存的是 down_blocks...processor.to_*_lora，无 unet. 前缀，PEFT 无法识别
+        from safetensors.torch import load_file
+
+        path = _get_lora_weight_file_path(meta)
+        state_dict = load_file(path)
+        state_dict = {
+            (f"unet.{k}" if not k.startswith("unet.") else k): v for k, v in state_dict.items()
+        }
+        pipe.load_lora_weights(state_dict, adapter_name=adapter)
+    else:
+        local = _resolve_local_path(meta.get("local_fallback"))
+        if local:
+            pipe.load_lora_weights(local, adapter_name=adapter)
+        else:
+            try:
+                pipe.load_lora_weights(
+                    meta["hf_repo"],
+                    weight_name=meta["weight_name"],
+                    adapter_name=adapter,
+                    token=HF_TOKEN,
+                    local_files_only=True,
+                )
+            except Exception as e:
+                if LOCAL_FILES_ONLY or not ALLOW_HF_HUB_DOWNLOAD:
+                    raise RuntimeError(
+                        f"LoRA not in HF cache ({meta['hf_repo']} / {meta['weight_name']}). "
+                        "Pre-download or set ALLOW_HF_HUB_DOWNLOAD=true."
+                    ) from e
+                pipe.load_lora_weights(
+                    meta["hf_repo"],
+                    weight_name=meta["weight_name"],
+                    adapter_name=adapter,
+                    token=HF_TOKEN,
+                    local_files_only=False,
+                )
+    if hasattr(pipe, "set_adapters"):
+        try:
+            pipe.set_adapters([adapter], adapter_weights=[scale])
+        except ValueError as e:
+            if "not in the list of present adapters" in str(e):
+                raise RuntimeError(
+                    f"LoRA 已加载但未能注册到管线（常与权重格式不兼容有关）。"
+                    f"请检查 {meta.get('hf_repo')} / {meta.get('weight_name')} 是否为 SD1.5+DreamShaper 可用的 Kohya/Diffusers LoRA。"
+                ) from e
+            raise
+    sd15_dreamshaper_lora_style = style_key
+    return pipe, meta
+
+def prepare_sd15_pipe(style: str):
+    """style: anime | watercolor | oil | realistic | sketch"""
+    global sd15_dreamshaper_lora_style
+    allowed = {"anime", "watercolor", "oil", "realistic", "sketch"}
+    if style not in allowed:
+        raise ValueError(f"sd15_style must be one of {allowed}")
+    if style == "anime":
+        unload_sd15_dreamshaper_full()
+        _unload_sd21_for_sd15()
+        return get_sd15_anime_pipe(), None
+    unload_sd15_anime()
+    _unload_sd21_for_sd15()
+    if style == "realistic":
+        pipe = get_sd15_dreamshaper_base()
+        if sd15_dreamshaper_lora_style is not None:
+            try:
+                pipe.unload_lora_weights()
+            except Exception as e:
+                print(f"unload_lora_weights: {e}")
+            sd15_dreamshaper_lora_style = None
+        return pipe, None
+    return _apply_lora_to_dreamshaper(style)
 
 @app.get("/")
 def root():
@@ -268,9 +607,12 @@ def status():
         "device": device,
         "cuda_available": torch.cuda.is_available(),
         "models_loaded": {
-            "sd": image_generator is not None,
+            "sd21": image_generator is not None,
+            "sd15_anime": sd15_anime_pipe is not None,
+            "sd15_dreamshaper": sd15_dreamshaper_pipe is not None,
             "blip": captioner is not None,
-            "clip": clip_alignment is not None
+            "clip": clip_alignment is not None,
+            "controlnet": controlnet is not None,
         }
     }
 
@@ -353,6 +695,15 @@ def clip_evaluate_api(req: CLIPEvaluateRequest):
 @app.post("/generate")
 def generate_image(req: GenerateRequest):
     try:
+        mode = (req.generation_mode or "sd21").lower()
+        if mode not in ("sd21", "sd15"):
+            raise HTTPException(status_code=400, detail="generation_mode 须为 sd21 或 sd15")
+        if mode == "sd15":
+            if not req.sd15_style:
+                raise HTTPException(status_code=400, detail="使用 sd15 时必须提供 sd15_style")
+            st = req.sd15_style.lower()
+            if st not in ("anime", "watercolor", "oil", "realistic", "sketch"):
+                raise HTTPException(status_code=400, detail="sd15_style 无效")
 
         if req.enhanced_prompt:
             translated_prompt = translate_to_english(req.enhanced_prompt)
@@ -364,20 +715,42 @@ def generate_image(req: GenerateRequest):
         num_steps = req.num_inference_steps
         guidance = req.guidance_scale
         
-        pipe = get_generator()
-        
         import os
         os.environ['TOKENIZERS_PARALLELISM'] = 'false'
-        
+
+        sd15_h = int(STYLE_CONFIG.get("sd15_size", 512))
+
+        if mode == "sd15":
+            pipe, lora_meta = prepare_sd15_pipe(st)
+            if lora_meta:
+                pfx = lora_meta.get("prompt_prefix_en")
+                if pfx and pfx.lower() not in final_prompt.lower()[:80]:
+                    final_prompt = f"{pfx} {final_prompt}"
+                elif lora_meta.get("prompt_hint"):
+                    hint = lora_meta["prompt_hint"]
+                    if hint.lower() not in final_prompt.lower():
+                        final_prompt = f"{final_prompt}, {hint}"
+        else:
+            pipe = get_generator()
+
         with torch.inference_mode():
-            image = pipe(
-                final_prompt,
-                num_inference_steps=num_steps,
-                guidance_scale=guidance,
-                height=768,
-                width=768,
-                enable_vae_tiling=True
-            ).images[0]
+            if mode == "sd21":
+                image = pipe(
+                    final_prompt,
+                    num_inference_steps=num_steps,
+                    guidance_scale=guidance,
+                    height=768,
+                    width=768,
+                    enable_vae_tiling=True
+                ).images[0]
+            else:
+                image = pipe(
+                    final_prompt,
+                    num_inference_steps=num_steps,
+                    guidance_scale=guidance,
+                    height=sd15_h,
+                    width=sd15_h,
+                ).images[0]
         
         img_buffer = io.BytesIO()
         image.save(img_buffer, format="PNG")
@@ -392,15 +765,18 @@ def generate_image(req: GenerateRequest):
         clip_evaluation = compute_image_text_similarity(final_prompt, image)
         print(f"CLIP Image-Text Similarity: {clip_evaluation}")
         
-        return {
+        out = {
             "image": f"data:image/png;base64,{img_str}",
             "original_prompt": req.prompt,
             "translated_prompt": translated_prompt,
             "caption": caption,
             "clip_evaluation": clip_evaluation,
             "used_num_steps": num_steps,
-            "used_guidance": guidance
+            "used_guidance": guidance,
+            "generation_mode": mode,
+            "sd15_style": req.sd15_style if mode == "sd15" else None,
         }
+        return out
     except Exception as e:
         import traceback
         traceback.print_exc()

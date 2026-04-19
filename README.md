@@ -1,32 +1,35 @@
 # 多模态图像生成系统
 
-一个基于 AI 的图像生成系统，支持文本生成图像、提示词增强优化、CLIP 语义相似度评估和 BLIP 图像描述。
+一个基于 AI 的图像生成系统，支持文本生成图像、提示词增强优化、CLIP 语义相似度评估和 BLIP 图像描述；在 **SD 2.1** 之外，可选用 **SD 1.5 多风格** 文生图（与 SD 2.1 同一套 `/generate` 流程）。
 
-**文档与仓库当前行为对齐说明（本版 README 更新于 2026-04）：** 启动前必须通过环境变量提供 `HF_TOKEN` 与 `DEEPSEEK_API_KEY`（推荐使用项目根目录 `.env`）；可选 `LOCAL_FILES_ONLY=true` 在模型已缓存时仅使用本地文件、避免联网拉取。
+**文档与仓库当前行为对齐说明（本版 README 更新于 2026-04）：** 启动前必须通过环境变量提供 `HF_TOKEN` 与 `DEEPSEEK_API_KEY`（推荐使用项目根目录 `.env`）。可选：`LOCAL_FILES_ONLY=true` 仅使用本地缓存；`ALLOW_HF_HUB_DOWNLOAD` 控制缓存缺失时是否允许联网从 Hugging Face 拉取（未设置时逻辑与 `LOCAL_FILES_ONLY` 联动，见下文）。
 
 ## 功能特性
 
-- **双模式图像生成**
-  - **SD 2.1 基础生成** — 使用 Stable Diffusion 2.1 将文本描述转化为图像（默认 768×768，VAE Tiling）
-  - **SD 1.5 + ControlNet** — 使用 ControlNet（Canny）基于边缘图控制生成
-- **提示词增强** — 使用 DeepSeek API 将用户输入扩展为简洁中文绘画提示词
-- **CLIP 语义相似度** — 评估生成图与提示词的匹配程度
-- **BLIP 图像描述** — 为生成图自动生成英文描述
-- **多语言** — 中文提示词经翻译模型转为英文后喂给 SD/CLIP
-- **语音播报** — 浏览器 Web Speech API 朗读描述（无需后端 TTS）
+- **三种生成路径**
+  - **SD 2.1 基础生成** — `stable-diffusion-2-1-base`，默认 **768×768**，VAE Tiling
+  - **SD 1.5 风格生成** — 在「基础生成」面板选择后端：`sd21`（默认）或 `sd15`，并指定 **五种风格之一**（二次元 / 水彩 / 油画 / 写实 / 素描），默认 **512×512**（由 `style_models.json` 中 `sd15_size` 配置）
+  - **SD 1.5 + ControlNet（Canny）** — 独立流程，基于上传图 Canny 边缘控制生成（**当前版本五种 SD1.5 风格不接 ControlNet**）
+- **提示词增强** — DeepSeek API 扩展中文绘画提示词
+- **中译英** — 优先本地 `Helsinki-NLP/opus-mt-zh-en`；缓存不可用或加载失败时 **回退 DeepSeek API**
+- **CLIP 语义相似度** — 评估生成图与提示词匹配度
+- **BLIP 图像描述** — 英文描述生成图
+- **语音播报** — 浏览器 Web Speech API
 
 ## 项目结构
 
 ```
-├── api_server.py             # FastAPI 后端（集成生成、评估、静态首页）
-├── index.html                # 前端单页（与 API 同进程同端口）
+├── api_server.py             # FastAPI 后端
+├── index.html                # 前端单页
+├── style_models.json         # SD1.5 风格：HF 仓库、权重文件名、本地回退路径、LoRA 强度与提示词提示
 ├── frontend/                 # React 前端（可选/备用）
 ├── scripts/
-│   └── download_models_stepwise.py   # 按步骤从 Hugging Face 预拉模型快照
-├── run_app.bat               # Windows：选择 Python 后启动服务并打开浏览器
-├── run_download.bat          # Windows：调用分步下载脚本（见下文）
-├── .env.example              # 环境变量模板（复制为 .env）
-├── requirements.txt          # Python 依赖
+│   └── download_models_stepwise.py   # 分步预拉 Hugging Face 资源
+├── run_app.bat               # Windows：启动服务并打开浏览器
+├── run_download.bat          # Windows：预下载（默认 large，可按需改为 sd15_styles / all）
+├── improve.md                # 功能与改进记录（可选，团队内可纳入版本库）
+├── .env.example              # 环境变量模板
+├── requirements.txt          # Python 依赖（含 diffusers、peft 等）
 └── README.md
 ```
 
@@ -38,182 +41,122 @@
 pip install -r requirements.txt
 ```
 
-建议使用 **Python 3.10+**（代码中使用 `str | None` 等类型写法）。
+建议使用 **Python 3.10+**。
 
 ### 2. 配置环境变量
 
 复制 `.env.example` 为 `.env` 并填写密钥：
 
-**Windows（cmd）：**
-
-```bat
-copy .env.example .env
-```
-
-**类 Unix：**
-
-```bash
-cp .env.example .env
-```
-
-`.env` 示例字段：
+**Windows（cmd）：** `copy .env.example .env`  
+**类 Unix：** `cp .env.example .env`
 
 ```env
 HF_TOKEN=your-huggingface-token-here
 DEEPSEEK_API_KEY=your-deepseek-api-key-here
-# 可选：仅使用已缓存的模型，不发起下载（需本地已有缓存）
+# 可选：仅离线/仅缓存
 # LOCAL_FILES_ONLY=true
+# 可选：是否允许 Hub 下载（未设置时，LOCAL_FILES_ONLY=true 则等价于不允许）
+# ALLOW_HF_HUB_DOWNLOAD=false
 ```
 
 不要将真实 `.env` 提交到仓库。
 
 ### 3. 启动服务
 
-**任意系统：**
-
 ```bash
 python api_server.py
 ```
 
-浏览器访问 **http://127.0.0.1:8000** 或 **http://localhost:8000**（首页由 `GET /` 返回 `index.html`）。
-
-**Windows 便捷方式：** 双击或在资源管理器中运行 `run_app.bat`。脚本会依次尝试上级目录的 `.venv-gpu`、本项目下的 `.venv310`、以及 `PATH` 中的 `python`，然后新开窗口启动 `api_server.py`，并尝试打开默认浏览器。
+浏览器访问 **http://127.0.0.1:8000**。**Windows** 可使用 `run_app.bat`（自动查找上级 `.venv-gpu`、本项目 `.venv310` 或 `PATH` 中的 `python`）。
 
 ## 模型预下载（可选）
 
-首次推理时，`diffusers` / `transformers` 仍可能按需下载权重。若在弱网或希望先统一下载，可使用 **`scripts/download_models_stepwise.py`**，按模型逐个调用 `huggingface_hub.snapshot_download`，并为每个仓库单独设置超时。
+脚本 **`scripts/download_models_stepwise.py`** 按仓库或单文件拉取资源，并为子进程设置较长的 Hub 超时（`HF_HUB_ETAG_TIMEOUT` / `HF_HUB_DOWNLOAD_TIMEOUT`）。
 
-**Windows：** 运行 `run_download.bat`（内部调用上述脚本，`--group large` 与较长超时，可按需改 bat 内参数）。
+**分组说明：**
 
-**命令行示例：**
+| `--group` | 内容 |
+|-----------|------|
+| `medium` | 翻译、CLIP、BLIP |
+| `large` | SD2.1、SD1.5 底模、ControlNet-Canny |
+| `sd15_styles` | DreamShaper、油画 LoRA 仓库 **snapshot**；另对 Counterfeit、水彩、素描等使用 **`hf_hub_download` 单文件**，避免整库过大或 Windows 下过长路径问题 |
+| `all` | 上述全部 |
+
+**Windows：** `run_download.bat` 当前默认为 `--group large`。若需 SD1.5 风格资源，请将 bat 中参数改为 `sd15_styles` 或 `all`。
+
+示例：
 
 ```bash
-python scripts/download_models_stepwise.py --python "C:\path\to\python.exe" --group medium --timeout 600
+python scripts/download_models_stepwise.py --python "C:\path\to\python.exe" --group sd15_styles --timeout 7200
 ```
 
-- `--group`：`medium`（翻译、CLIP、BLIP）、`large`（SD2.1、SD1.5、ControlNet-Canny）、`all`
-- 脚本会加载项目根目录 `.env` 以读取 `HF_TOKEN`
+权重与本地路径见 **`style_models.json`**（`local_fallback`）。若 HF 失败，可将同名文件放到对应路径（需自行获取权重）。
+
+## 环境变量与联网策略（摘要）
+
+| 变量 | 含义 |
+|------|------|
+| `LOCAL_FILES_ONLY=true` | 加载模型时 `local_files_only=True`，不主动从 Hub 拉取 |
+| `ALLOW_HF_HUB_DOWNLOAD` | 未设置时：**若未** `LOCAL_FILES_ONLY`，则允许在缓存缺失时联网；若 `LOCAL_FILES_ONLY=true`，则不允许。也可显式设为 `true` / `false` 覆盖 |
 
 ## 技术栈
 
-### 后端
+- FastAPI、Uvicorn  
+- PyTorch、**Diffusers（≥0.27）**、Transformers、**PEFT**（SD1.5 LoRA）  
+- OpenCV、Pillow、python-dotenv  
 
-- FastAPI、Uvicorn
-- PyTorch、Diffusers、Transformers
-- OpenCV（Canny）、Pillow、python-dotenv
+## 模型与风格说明（摘要）
 
-### 前端
-
-- 原生 HTML / CSS / JavaScript（主入口由后端托管）
-
-### 外部 API
-
-- DeepSeek Chat API（提示词增强）
-- Hugging Face Hub（模型与 Token）
-
-## 模型说明
-
-### Stable Diffusion 2.1（基础生成）
-
-- **模型 ID：** `sd2-community/stable-diffusion-2-1-base`
-- **说明：** 文本条件生成；启用 VAE Tiling 减轻拼缝感
-
-### Stable Diffusion 1.5 + ControlNet Canny
-
-- **流水线：** `runwayml/stable-diffusion-v1-5` + `lllyasviel/sd-controlnet-canny`
-- **说明：** 需先由上传图得到 Canny 图（见 `/process-canny`）
-
-### CLIP
-
-- **模型 ID：** `openai/clip-vit-base-patch32`
-- **说明：** 余弦相似度评估提示词与图像的语义一致性
-
-### BLIP
-
-- **模型 ID：** `Salesforce/blip-image-captioning-large`
-
-### 翻译（中→英）
-
-- **模型 ID：** `Helsinki-NLP/opus-mt-zh-en`
-
-### 语音播报
-
-- 浏览器 `SpeechSynthesis` API，无服务端语音模型依赖
+- **SD 2.1：** `sd2-community/stable-diffusion-2-1-base`  
+- **ControlNet：** `runwayml/stable-diffusion-v1-5` + `lllyasviel/sd-controlnet-canny`  
+- **SD 1.5 风格（`generation_mode=sd15`）：** 由 `style_models.json` 配置，例如二次元用 `gsdf/Counterfeit-V3.0` 单文件权重、写实基于 `Lykon/dreamshaper-8`，水彩/油画/素描为 DreamShaper + 对应 LoRA（详见该 JSON）  
+- **CLIP：** `openai/clip-vit-base-patch32`  
+- **BLIP：** `Salesforce/blip-image-captioning-large`  
+- **翻译：** `Helsinki-NLP/opus-mt-zh-en`（可选 DeepSeek 回退）
 
 ## 安装部署（给他人使用）
 
-1. **克隆仓库**后进入项目根目录（含 `api_server.py` 的目录）。
-2. **创建虚拟环境**（推荐），再 `pip install -r requirements.txt`。
-3. **仅通过 `.env` 配置密钥**（不要要求在源码里改 Key；若文档仍写「改 `api_server.py`」请以本 README 为准）。
-4. **磁盘与网络：** 全部模型与缓存体积较大，请预留约 **15GB+** 空间；需要能访问 Hugging Face（或事先在本机缓存完毕并视情况设置 `LOCAL_FILES_ONLY`）。
-5. **GPU：** 有 NVIDIA GPU + CUDA 时推理显著快于 CPU。
+1. 克隆后进入项目根目录，创建虚拟环境并 `pip install -r requirements.txt`。  
+2. 复制 `.env.example` 为 `.env` 并填写密钥。  
+3. 预留足够磁盘：**基础套件约 15GB+**；若使用 **SD1.5 风格**，额外需要 Counterfeit / DreamShaper / LoRA 等空间。  
+4. 可将手动下载的权重放到 `style_models.json` 的 `local_fallback` 路径；**`models/` 目录已在 `.gitignore` 中忽略**，避免误提交大文件。  
+5. 有 NVIDIA GPU + CUDA 时推理更快。
 
 ## 工作流程
 
 ```
-用户输入提示词
-      ↓
-提示词增强（DeepSeek，可选）
-      ↓
-中译英（Opus-MT）
-      ↓
-Stable Diffusion 生成图像
-      ↓
-CLIP 相似度 + BLIP 描述（可选朗读）
+用户输入 →（可选）扩充提示词 → 中译英 → SD 2.1 或 SD1.5 风格 或（另一入口）ControlNet
+         → BLIP + CLIP →（可选）语音播报
 ```
 
 ## API 接口摘要
 
-### `GET /`
-
-返回单页 `index.html`；若无文件则返回 JSON 状态。
-
 ### `GET /status`
 
-返回运行环境与模型是否已加载等信息（如 `device`、`cuda_available`、`models_loaded`）。
-
-### `POST /enhance`
-
-请求体：`{"prompt": "..."}`  
-返回：`original_prompt`、`enhanced_prompt`
+返回 `device`、`cuda_available`、`models_loaded`（含 `sd21`、`sd15_anime`、`sd15_dreamshaper`、`blip`、`clip`、`controlnet` 等是否已加载）。
 
 ### `POST /generate`
 
-请求体示例：
+| 字段 | 说明 |
+|------|------|
+| `prompt` | 用户提示（可中文） |
+| `enhanced_prompt` | 可选；若提供则优先生效并参与翻译 |
+| `num_inference_steps`、`guidance_scale` | 与惯例相同 |
+| `generation_mode` | `"sd21"`（默认）或 `"sd15"` |
+| `sd15_style` | 当 `generation_mode` 为 `sd15` 时 **必填**：`anime` \| `watercolor` \| `oil` \| `realistic` \| `sketch` |
 
-```json
-{
-  "prompt": "一只可爱的猫咪",
-  "enhanced_prompt": "可选：若提供则优先生效并参与翻译",
-  "num_inference_steps": 50,
-  "guidance_scale": 10.0
-}
-```
+成功时响应额外包含 `generation_mode`、`sd15_style`（仅 sd15 时有值）。
 
-返回含：`image`（data URL）、`translated_prompt`、`caption`、`clip_evaluation`、`used_num_steps`、`used_guidance`
+### 其他
 
-### `POST /generate-controlnet`
-
-请求体含：`prompt`、`control_image`（**纯 base64 字符串**，不含 `data:image/...;base64,` 前缀；与当前 `index.html` 中由 Canny 结果拆分后的字段一致）、`num_inference_steps`、`guidance_scale`、`controlnet_conditioning_scale`，以及可选 `enhanced_prompt`
-
-### `POST /process-canny`
-
-`multipart/form-data` 上传文件字段 `file`，返回 Canny 图的 data URL 等
-
-### `POST /clip-evaluate`
-
-请求体：`prompt`、`image`（base64，需有效图像以计算相似度）
-
-### `POST /caption`
-
-`multipart/form-data` 上传图像，`file` 字段；返回 `caption` 文本
+- `POST /enhance`、`POST /process-canny`、`POST /generate-controlnet`、`POST /clip-evaluate`、`POST /caption` 行为见前文版本说明；ControlNet 请求体中 `control_image` 为 **纯 base64**（与 `index.html` 中 Canny 结果 `split(',')[1]` 一致）。
 
 ## 前端使用
 
-1. 打开服务根 URL（默认 8000 端口）
-2. 选择 **SD 2.1** 或 **ControlNet** 流程，按页面提示上传/输入
-3. 可使用「扩充提示词」再生成  
-4. 生成后可查看 CLIP 分数与 BLIP 描述，并可使用语音播报
+1. 打开服务根 URL。  
+2. **SD 2.1 基础生成**：可选择生成后端为 **SD 2.1** 或 **SD 1.5** 及五种风格。  
+3. **SD 1.5 + ControlNet**：上传参考图 → Canny → 生成（与上述五种风格入口分离）。  
+4. 可使用「扩充提示词」、查看 CLIP 与 BLIP、语音播报。
 
 ## CLIP 分数参考
 
@@ -222,39 +165,34 @@ CLIP 相似度 + BLIP 描述（可选朗读）
 | > 0.80       | 很高匹配 |
 | 0.60–0.80    | 较好 |
 | 0.40–0.60    | 一般 |
-| < 0.40       | 偏低（可与提示词、随机性有关） |
+| < 0.40       | 偏低 |
 
-*注：实际数值范围为模型输出，表内为经验区间。*
+*CLIP 输出为约 0～1 的余弦相似度，表内为经验区间。*
 
 ## 常见问题
 
-### 生成图有接缝或伪影？
+### 启动报错缺少 Token？
 
-已启用 VAE Tiling；仍有问题时可适当增加步数或调整提示词。
+检查 `.env` 中 `HF_TOKEN`、`DEEPSEEK_API_KEY`。
 
-### 启动报错「HF_TOKEN / DEEPSEEK_API_KEY 未设置」？
+### SD1.5 风格加载失败？
 
-检查项目目录下是否存在正确配置的 `.env`，或是否在系统环境中导出同名变量。
+先运行 `download_models_stepwise.py --group sd15_styles`（或 `all`），或按 `style_models.json` 手动放置 `local_fallback` 文件；确认 `ALLOW_HF_HUB_DOWNLOAD` / `LOCAL_FILES_ONLY` 与网络环境一致。
 
-### Windows 下控制台乱码或 emoji 报错？
+### `run_download.bat` 没有拉 SD1.5 风格？
 
-服务端已对 stdout/stderr 尝试设为 UTF-8；若仍有终端兼容问题，可使用英文日志或减少特殊字符。
+默认仅 `large`。请改为 `--group sd15_styles` 或 `all`。
 
-### 模型下载慢或失败？
+### 翻译不走本地模型？
 
-检查网络与 `HF_TOKEN`；可先运行 `download_models_stepwise.py` 分段下载；或使用已缓存的机器并考虑 `LOCAL_FILES_ONLY=true`。
-
-### 只想离线已有缓存？
-
-在确认 Hugging Face 缓存目录中已有对应模型文件后，设置 `LOCAL_FILES_ONLY=true`，避免程序再次发起下载。
+缓存中无 Helsinki 或加载失败时会使用 DeepSeek 做中译英（需有效 `DEEPSEEK_API_KEY`）。
 
 ## 环境要求
 
-- **Python 3.10+**
-- **PyTorch 2.x**（根据平台安装 CPU/GPU 轮次）
-- **内存** 建议 8GB+  
-- **磁盘** 建议预留 15GB+ 用于模型与缓存  
-- **GPU（推荐）** NVIDIA GPU，显存 8GB+ 更稳妥
+- Python 3.10+  
+- PyTorch 2.x  
+- 内存建议 8GB+；磁盘建议 **15GB+**（含 SD1.5 风格时更多）  
+- 推荐 NVIDIA GPU，显存 8GB+ 更稳妥  
 
 ## License
 
