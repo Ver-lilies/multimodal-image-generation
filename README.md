@@ -2,14 +2,14 @@
 
 一个基于 AI 的图像生成系统，支持文本生成图像、提示词增强优化、CLIP 语义相似度评估和 BLIP 图像描述；在 **SD 2.1** 之外，可选用 **SD 1.5 多风格** 文生图（与 SD 2.1 同一套 `/generate` 流程）。
 
-**文档与仓库当前行为对齐说明（本版 README 更新于 2026-04，含参考模式 Tab、`static/` 前端拆分、`install_deps.bat` / `run_download.bat`）：** 启动前必须通过环境变量提供 `HF_TOKEN` 与 `DEEPSEEK_API_KEY`（推荐使用项目根目录 `.env`）。可选：`LOCAL_FILES_ONLY=true` 仅使用本地缓存；`ALLOW_HF_HUB_DOWNLOAD` 控制缓存缺失时是否允许联网从 Hugging Face 拉取（未设置时逻辑与 `LOCAL_FILES_ONLY` 联动，见下文）。
+**文档与仓库当前行为对齐说明（本版 README 更新于 2026-04，含 `HF_HOME` 默认到项目内 `huggingface/`、`HF_ENDPOINT` 镜像可选、`PORT`/`OPEN_BROWSER`、参考模式精简为 5 种）：** 启动前必须通过环境变量提供 `HF_TOKEN` 与 `DEEPSEEK_API_KEY`（推荐使用项目根目录 `.env`）。**Hugging Face 模型缓存**默认在**项目根目录下的 `huggingface/`**（环境变量 **`HF_HOME`**；`run_download.bat`、`download_models_stepwise.py` 与 `api_server.py` 在未设置 `HF_HOME` 时一致）。若需使用库的全局默认 **`~/.cache/huggingface`**，可在 `.env` 或系统中设置 **`HF_HOME`**。可选：`LOCAL_FILES_ONLY=true` 仅使用本地缓存；`ALLOW_HF_HUB_DOWNLOAD` 控制缓存缺失时是否允许联网从 Hugging Face 拉取（未设置时逻辑与 `LOCAL_FILES_ONLY` 联动，见下文）。**`huggingface/` 已列入 `.gitignore`**，勿将缓存提交进仓库。
 
 ## 功能特性
 
 - **三种生成路径**
   - **SD 2.1 基础生成** — `stable-diffusion-2-1-base`，默认 **768×768**，VAE Tiling
   - **SD 1.5 风格生成** — 在「文生图」面板选择画风：`sd21`（默认）或 `sd15`，并指定 **五种风格之一**（二次元 / 水彩 / 油画 / 写实 / 素描），默认 **512×512**（由 `style_models.json` 中 `sd15_size` 配置）
-  - **SD 1.5 + 参考模式** — 独立 Tab：单选 **Depth / OpenPose / Lineart / SoftEdge(HED) / Canny / IP-Adapter / Img2Img**；后端 **按当前模式懒加载** SD1.5 底模与对应 ControlNet 或 IP-Adapter 或 Img2Img 管线，**切换模式会卸载上一栈**，避免多套权重同时占满显存。**Canny** 预处理与旧版一致（OpenCV），不依赖 Annotators。其余控制类预处理（Depth 等）依赖 `controlnet-aux` 与 `lllyasviel/Annotators`（见下文分步下载）。
+  - **SD 1.5 + 参考模式** — 独立 Tab：单选 **OpenPose / Lineart / SoftEdge(HED) / Canny / IP-Adapter**；后端 **按当前模式懒加载** SD1.5 底模与对应 ControlNet 或 IP-Adapter 管线，**切换模式会卸载上一栈**，避免多套权重同时占满显存。**Canny** 预处理与旧版一致（OpenCV），不依赖 Annotators。其余控制类预处理（OpenPose/HED/Lineart 等）依赖 `controlnet-aux` 与 `lllyasviel/Annotators`（见下文分步下载）。
 - **提示词增强** — DeepSeek API 扩展中文绘画提示词
 - **中译英** — 优先本地 `Helsinki-NLP/opus-mt-zh-en`；缓存不可用或加载失败时 **回退 DeepSeek API**
 - **CLIP 语义相似度** — 评估生成图与提示词匹配度
@@ -32,7 +32,8 @@
 │   └── download_models_stepwise.py   # 分步预拉 Hugging Face 资源
 ├── run_app.bat               # Windows：启动服务并打开浏览器
 ├── install_deps.bat          # Windows：CUDA 版 PyTorch + requirements.txt（不下载模型）
-├── run_download.bat          # Windows：先 call install_deps.bat，再 HF 预下载 --group webapp
+├── run_download.bat          # Windows：先 call install_deps.bat，再 HF 预下载 --group webapp（默认 HF_HOME=项目\huggingface）
+├── run_download_hf_cache_to_repo.bat  # 仅在本 CMD 窗口设置 HF_HOME 后下载 webapp；不装依赖、不改 .env（适合缓存与推理使用不同盘符时）
 ├── improve.md                # 功能与改进记录（可选，团队内可纳入版本库）
 ├── .env.example              # 环境变量模板
 ├── requirements.txt          # Python 依赖（含 diffusers、peft 等）
@@ -68,6 +69,14 @@ pip install -r requirements.txt
 ```env
 HF_TOKEN=your-huggingface-token-here
 DEEPSEEK_API_KEY=your-deepseek-api-key-here
+# 可选：HF 缓存目录（不设置则默认为「项目根/huggingface」）
+# HF_HOME=E:\path\to\your\cache
+# 可选：国内网络可尝试镜像（自行评估可用性）
+# HF_ENDPOINT=https://hf-mirror.com
+# 可选：首选 HTTP 端口（默认 8000）；若被占用会自动尝试 8001、8002…
+# PORT=8000
+# 可选：启动后是否自动打开浏览器（默认开启）；设为 0 则只打印控制台中的 URL
+# OPEN_BROWSER=1
 # 可选：仅离线/仅缓存
 # LOCAL_FILES_ONLY=true
 # 可选：是否允许 Hub 下载（未设置时，LOCAL_FILES_ONLY=true 则等价于不允许）
@@ -82,7 +91,7 @@ DEEPSEEK_API_KEY=your-deepseek-api-key-here
 python api_server.py
 ```
 
-浏览器访问 **http://127.0.0.1:8000**。**Windows** 可使用 `run_app.bat`（自动查找上级 `.venv-gpu`、本项目 `.venv310` 或 `PATH` 中的 `python`）。
+控制台会打印实际监听地址（默认 **`http://127.0.0.1:8000`**；若首选端口被占用会自动顺延）。**Windows** 可使用 `run_app.bat`（自动查找上级 `.venv-gpu`、本项目 `.venv310` 或 `PATH` 中的 `python`；**在同一 CMD 窗口前台运行服务**，便于持续查看 Uvicorn 日志，**Ctrl+C** 停止）。通过 **`OPEN_BROWSER`** 可控制是否在就绪后自动打开系统浏览器（见上表）。
 
 ## 模型预下载（可选）
 
@@ -92,14 +101,14 @@ python api_server.py
 
 | `--group` | 内容 |
 |-----------|------|
-| **`webapp`** | **推荐一键**：`medium` + `large` + `reference`（去重），覆盖本仓库 Web 界面常用能力（含 **controlnet-aux 依赖的 Annotators**、参考模式各 ControlNet、IP-Adapter 轻量权重文件）；**不含** 可选「文生图」二次元 / DreamShaper 风格包（另见 `sd15_styles`） |
+| **`webapp`** | **推荐一键（分两阶段）**：**阶段 1** — `medium` + SD2.1 + **`sd15_styles` 同款**（DreamShaper、油画 LoRA 库、二次元/水彩/素描 **单文件**）；**阶段 2** — 参考模式专用（各 ControlNet、Annotators、IP-Adapter 单文件）。**不下载** `runwayml/stable-diffusion-v1-5` |
 | `medium` | 翻译、CLIP、BLIP |
-| `large` | SD2.1、SD1.5 底模、ControlNet-Canny |
+| `large` | SD2.1、ControlNet-Canny（**不含** runwayml SD1.5；底模统一为 DreamShaper，见 `reference_modes.json`） |
 | `sd15_styles` | DreamShaper、油画 LoRA 仓库 **snapshot**；另对 **AOM3A3 二次元**、水彩、素描等使用 **`hf_hub_download` 单文件**，避免整库过大或 Windows 下过长路径问题 |
-| `reference` | **参考模式全套缓存**：**`Lykon/dreamshaper-8`**（底模，与 `reference_modes.json` 中 `sd15_base` 一致）、各 ControlNet（depth/openpose/lineart/hed/canny）、`lllyasviel/Annotators`（预处理）、`h94/IP-Adapter` 下单文件 `ip-adapter_sd15_light_v11.bin`。若只使用某一种模式，可改为只 **snapshot 对应仓库**（见 `reference_modes.json`），不必一次拉满 |
-| `all` | 上述全部（`reference` 与 `large` 中重复的 `runwayml/...` 会去重，只拉取一次） |
+| `reference` | **参考模式全套缓存**：**`Lykon/dreamshaper-8`**（底模，与 `reference_modes.json` 中 `sd15_base` 一致）、各 ControlNet（openpose/lineart/hed/canny）、`lllyasviel/Annotators`（预处理）、`h94/IP-Adapter` 下单文件 `ip-adapter_sd15_light_v11.bin`。若只使用某一种模式，可改为只 **snapshot 对应仓库**（见 `reference_modes.json`），不必一次拉满 |
+| `all` | 上述全部；**`sd15_styles` 中的 DreamShaper** 与 **`reference` 中重复**，脚本按仓库 id **去重只拉一次** |
 
-**Windows：** 双击 **`run_download.bat`** 会先按 **`install_deps.bat` 相同顺序**安装 **GPU 版 PyTorch** 与 **`requirements.txt`**，再执行 **`--group webapp`**。若仅需 Python 依赖、不拉模型，可运行 **`install_deps.bat`**。若需 SD1.5 **画风**资源，请再运行 `--group sd15_styles` 或 `all`。
+**Windows：** 双击 **`run_download.bat`** 会先按 **`install_deps.bat` 相同顺序**安装 **GPU 版 PyTorch** 与 **`requirements.txt`**，再执行 **`--group webapp`**（**`--timeout 21600`**；**先**拉翻译/CLIP/BLIP、SD2.1、SD1.5 画风相关，**再**拉参考模式资源；失败可重复运行以续传）。脚本与推理进程默认将 **`HF_HOME`** 设为**项目下的 `huggingface`**（若已在 `.env` 中设置 `HF_HOME` 则尊重该值）。若下载机与运行机不同、或希望**仅当前窗口**把缓存下到项目目录而不改 `.env`，可使用 **`run_download_hf_cache_to_repo.bat`**（不执行 `install_deps`，仅设置 `HF_HOME` 后跑下载；结束后按提示把 `HF_HOME` 写入 `.env` 即可让 `api_server` 使用同一缓存）。若仅需 Python 依赖、不拉模型，可运行 **`install_deps.bat`**。若只要画风、不要参考模式快照，可单独运行 **`--group sd15_styles`**；全量则用 **`all`**。
 
 示例：
 
@@ -119,6 +128,10 @@ python scripts/download_models_stepwise.py --python "C:\path\to\python.exe" --gr
 
 | 变量 | 含义 |
 |------|------|
+| `HF_HOME` | Hugging Face 缓存根目录；未设置时默认为**项目根目录下的 `huggingface/`** |
+| `HF_ENDPOINT` | 可选；若访问 `huggingface.co` 不稳定，可在 `.env` 中配置镜像（如 `https://hf-mirror.com`，见 `.env.example` 注释） |
+| `PORT` | 首选 HTTP 端口（默认 `8000`）；被占用时进程会自动尝试后续端口 |
+| `OPEN_BROWSER` | 用 `python api_server.py` 启动时是否自动打开浏览器（默认开启；`0` / `false` 关闭） |
 | `LOCAL_FILES_ONLY=true` | 加载模型时 `local_files_only=True`，不主动从 Hub 拉取 |
 | `ALLOW_HF_HUB_DOWNLOAD` | 未设置时：**若未** `LOCAL_FILES_ONLY`，则允许在缓存缺失时联网；若 `LOCAL_FILES_ONLY=true`，则不允许。也可显式设为 `true` / `false` 覆盖 |
 
@@ -126,13 +139,13 @@ python scripts/download_models_stepwise.py --python "C:\path\to\python.exe" --gr
 
 - FastAPI、Uvicorn  
 - PyTorch（**请按「快速开始」先装 CUDA 版，勿单靠 `requirements.txt` 装 torch**）、**Diffusers（≥0.27）**、Transformers、**PEFT**（SD1.5 LoRA）  
-- **controlnet-aux**（参考模式中 Depth/OpenPose/HED/Lineart 等预处理；Canny 仍用 OpenCV）、OpenCV、Pillow、python-dotenv  
+- **controlnet-aux**（参考模式中 OpenPose/HED/Lineart 等预处理；Canny 仍用 OpenCV）、OpenCV、Pillow、python-dotenv  
 
 ## 模型与风格说明（摘要）
 
 - **SD 2.1：** `sd2-community/stable-diffusion-2-1-base`  
-- **ControlNet（旧接口 `/generate-controlnet`，仍可用）：** `runwayml/stable-diffusion-v1-5` + `lllyasviel/sd-controlnet-canny`  
-- **参考模式（`/process-reference`、`/generate-reference`）：** 底模默认为 **`Lykon/dreamshaper-8`**（`reference_modes.json` 的 `sd15_base`，可改为其它 SD1.5 兼容仓库）；各模式见同文件（如 depth → `lllyasviel/sd-controlnet-depth` + Midas；IP-Adapter → `h94/IP-Adapter`；img2img 仅底模）。输出边长默认 **768**（可在 `reference_modes.json` 顶层改 `output_size`，改为 **512** 可明显省显存）。  
+- **ControlNet（旧接口 `/generate-controlnet`，仍可用）：** 底模同 **`reference_modes.json` 的 `sd15_base`（默认 DreamShaper）** + `lllyasviel/sd-controlnet-canny`  
+- **参考模式（`/process-reference`、`/generate-reference`）：** 底模默认为 **`Lykon/dreamshaper-8`**（`reference_modes.json` 的 `sd15_base`，可改为其它 SD1.5 兼容仓库）；各模式见同文件（如 openpose → `lllyasviel/sd-controlnet-openpose`；IP-Adapter → `h94/IP-Adapter` 下单文件）。输出边长默认 **768**（可在 `reference_modes.json` 顶层改 `output_size`，改为 **512** 可明显省显存）。  
 - **SD 1.5 风格（`generation_mode=sd15`）：** 由 `style_models.json` 配置，例如二次元用 **`WarriorMama777/OrangeMixs`** 的 **`AOM3A3_orangemixs.safetensors`**（单文件）、写实基于 `Lykon/dreamshaper-8`，水彩/油画/素描为 DreamShaper + 对应 LoRA；请求体可传 **`sd15_resolution`**：`512` / `640` / `768`（服务端会按 GPU 空闲显存拒绝过高分辨率）。二次元默认 **CLIP Skip = 2**（见 `style_models.json` 中 `anime.clip_skip`）。  
 - **CLIP：** `openai/clip-vit-base-patch32`  
 - **BLIP：** `Salesforce/blip-image-captioning-large`  
@@ -175,8 +188,8 @@ python scripts/download_models_stepwise.py --python "C:\path\to\python.exe" --gr
 ### 参考模式（SD1.5）
 
 - **`GET /reference-modes`**：返回 `reference_modes.json`（含各模式 `label_zh` / `hint_zh` 与仓库配置）。
-- **`POST /process-reference`**：`multipart/form-data`，字段 **`ref_mode`**（如 `depth`）、**`file`**（图片）。返回 **`control_image`**（data URL）与 **`output_size`**。不加载扩散模型，仅做预处理（或 IP/Img2Img 下的缩放图）。
-- **`POST /generate-reference`**：JSON 字段 **`ref_mode`**（与 `reference_modes.json` 中键一致，如 `depth`、`openpose`、`lineart`、`softedge`、`canny`、`ip_adapter`、`img2img`）、**`prompt`**、**`control_image`**（纯 base64，与前端 `split(',')[1]` 一致）、**`num_inference_steps`**、**`guidance_scale`**；ControlNet 类模式可选 **`controlnet_conditioning_scale`**（默认 `1.0`）；**`ip_adapter`** 可选 **`ip_adapter_scale`**（默认 `0.6`）；**`img2img`** 可选 **`strength`**（默认 `0.55`）；可选 **`enhanced_prompt`**。
+- **`POST /process-reference`**：`multipart/form-data`，字段 **`ref_mode`**（如 `openpose`）、**`file`**（图片）。返回 **`control_image`**（data URL）与 **`output_size`**。不加载扩散模型，仅做预处理（或 IP-Adapter 下的缩放图）。
+- **`POST /generate-reference`**：JSON 字段 **`ref_mode`**（与 `reference_modes.json` 中键一致，如 `openpose`、`lineart`、`softedge`、`canny`、`ip_adapter`）、**`prompt`**、**`control_image`**（纯 base64，与前端 `split(',')[1]` 一致）、**`num_inference_steps`**、**`guidance_scale`**；ControlNet 类模式可选 **`controlnet_conditioning_scale`**（默认 `1.0`）；**`ip_adapter`** 可选 **`ip_adapter_scale`**（默认 `0.6`）；可选 **`enhanced_prompt`**。
 
 ### 其他
 
@@ -213,7 +226,7 @@ python scripts/download_models_stepwise.py --python "C:\path\to\python.exe" --gr
 
 ### `run_download.bat` 没有拉 SD1.5 风格？
 
-默认 **`webapp`**（翻译/CLIP/BLIP + SD2.1/SD1.5 + 参考模式相关）。二次元 / DreamShaper 等需再执行 `--group sd15_styles` 或 `all`。
+默认 **`webapp`**（分两阶段：先 **核心+SD2.1+画风**，再 **参考模式**）。若只要子集，可用 **`sd15_styles`** / **`reference`** / **`all`**。
 
 ### 翻译不走本地模型？
 
@@ -228,9 +241,8 @@ python scripts/download_models_stepwise.py --python "C:\path\to\python.exe" --gr
 
 | 场景 | 推荐显存 | 说明 |
 |------|-----------|------|
-| 仅一种 ControlNet（Depth/OpenPose/Lineart/HED） | **10GB+** 更从容 | SD1.5 + 单 ControlNet + 768²；8GB 可尝试关其它占显存程序或把 `output_size` 改为 512 |
+| 仅一种 ControlNet（OpenPose/Lineart/HED/Canny） | **10GB+** 更从容 | SD1.5 + 单 ControlNet + 768²；8GB 可尝试关其它占显存程序或把 `output_size` 改为 512 |
 | IP-Adapter（light 权重） | **8–10GB+** | 无底模重复加载时略省于部分 ControlNet 组合 |
-| Img2Img | **8–10GB+** | 与单 ControlNet 同量级 |
 | CPU 推理 | 内存 **16GB+** 建议 | 极慢，仅作兜底 |
 
 ## License

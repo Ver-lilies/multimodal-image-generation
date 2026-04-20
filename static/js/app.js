@@ -29,6 +29,23 @@
         }, ms);
     }
 
+    function networkErrorHint(msg) {
+        const s = String(msg || "").toLowerCase();
+        if (
+            s.includes("failed to fetch") ||
+            s.includes("networkerror") ||
+            s.includes("load failed") ||
+            s.includes("network request failed")
+        ) {
+            return (
+                (msg || "网络错误") +
+                " — 请确认已运行 run_app.bat，且控制台出现 Application startup complete；" +
+                "若 8000 被占用，窗口会打印实际 http 地址（请用该地址打开页面）。"
+            );
+        }
+        return msg;
+    }
+
     function formatHttpError(data, status) {
         if (!data) return "HTTP " + status;
         const d = data.detail != null ? data.detail : data.error;
@@ -73,20 +90,18 @@
 
     function syncReferenceAdvancedControls() {
         const mode = document.getElementById("cn-ref-mode");
-        const m = mode ? mode.value : "depth";
+        const m = mode ? mode.value : "openpose";
         const cnWrap = document.getElementById("cn-cn-scale-wrap");
         const ipWrap = document.getElementById("cn-ip-wrap");
-        const stWrap = document.getElementById("cn-strength-wrap");
-        const controlTypes = { depth: 1, openpose: 1, lineart: 1, softedge: 1, canny: 1 };
+        const controlTypes = { openpose: 1, lineart: 1, softedge: 1, canny: 1 };
         if (cnWrap) cnWrap.style.display = controlTypes[m] ? "block" : "none";
         if (ipWrap) ipWrap.style.display = m === "ip_adapter" ? "block" : "none";
-        if (stWrap) stWrap.style.display = m === "img2img" ? "block" : "none";
     }
 
     window.onReferenceModeChange = function () {
         const modeEl = document.getElementById("cn-ref-mode");
         const hintEl = document.getElementById("cn-ref-hint");
-        const m = modeEl ? modeEl.value : "depth";
+        const m = modeEl ? modeEl.value : "openpose";
         const meta = referenceModesMeta[m];
         if (hintEl) {
             hintEl.textContent = meta && meta.hint_zh ? meta.hint_zh : "请选择模式并上传参考图。";
@@ -145,7 +160,7 @@
             const formData = new FormData();
             formData.append("file", file);
             const modeSel = document.getElementById("cn-ref-mode");
-            formData.append("ref_mode", modeSel ? modeSel.value : "depth");
+            formData.append("ref_mode", modeSel ? modeSel.value : "openpose");
 
             try {
                 const res = await fetch(API_BASE + "/process-reference", {
@@ -202,6 +217,22 @@
         if (loading) loading.style.display = "block";
         if (section) section.style.display = "none";
 
+        showToast("正在调用 DeepSeek 扩充提示词…", "info");
+        const statusEl = document.getElementById(prefix + "-enhance-status");
+        var enhanceTick = null;
+        if (statusEl) {
+            statusEl.textContent = "正在连接 API…";
+            var eStep = 0;
+            enhanceTick = setInterval(function () {
+                eStep += 1;
+                if (eStep === 1) {
+                    statusEl.textContent = "DeepSeek 正在改写提示词…";
+                } else {
+                    statusEl.textContent = "仍在等待响应（网络较慢时会较久）…";
+                }
+            }, 4000);
+        }
+
         try {
             const res = await fetch(API_BASE + "/enhance", {
                 method: "POST",
@@ -226,8 +257,14 @@
             if (section) section.style.display = "block";
             showToast("提示词已扩充；生成时将优先使用下方扩充内容", "success");
         } catch (err) {
-            showToast("扩充失败: " + err.message, "error");
+            showToast("扩充失败: " + networkErrorHint(err.message), "error");
         } finally {
+            if (enhanceTick) {
+                clearInterval(enhanceTick);
+            }
+            if (statusEl) {
+                statusEl.textContent = "正在扩充…";
+            }
             btn.disabled = false;
             if (loading) loading.style.display = "none";
         }
@@ -246,6 +283,30 @@
         }
     }
 
+    function startGenerateStatusTicker(prefix) {
+        const textEl = document.getElementById(prefix + "-loading-text");
+        if (!textEl) {
+            return function () {};
+        }
+        const orig = textEl.textContent;
+        textEl.textContent = "已提交请求，等待服务器响应…";
+        var step = 0;
+        var msgs = [
+            "已提交请求，等待服务器响应…",
+            "翻译与扩散推理中（GPU）…",
+            "仍在生成（高步数或大分辨率会较久）…",
+            "即将完成后处理（描述 / CLIP）…",
+        ];
+        var tid = setInterval(function () {
+            step = Math.min(step + 1, msgs.length - 1);
+            textEl.textContent = msgs[step];
+        }, 3200);
+        return function () {
+            clearInterval(tid);
+            textEl.textContent = orig;
+        };
+    }
+
     window.generateImage = async function (mode) {
         const prefix = mode;
         const promptEl = document.getElementById(prefix + "-prompt");
@@ -261,6 +322,9 @@
 
         btn.disabled = true;
         setIndeterminateLoading(prefix, true);
+        var stopGenTicker = startGenerateStatusTicker(prefix);
+        var origTitle = document.title;
+        document.title = "⏳ 生成中… · " + origTitle.replace(/^⏳ 生成中… · /, "");
         if (result) result.style.display = "none";
         if (placeholder) placeholder.style.display = "none";
 
@@ -297,12 +361,14 @@
                     showToast("请先在本页上传参考图（并等待处理完成）", "error");
                     btn.disabled = false;
                     setIndeterminateLoading(prefix, false);
+                    stopGenTicker();
+                    document.title = origTitle;
                     if (placeholder) placeholder.style.display = "flex";
                     return;
                 }
                 const refMode = document.getElementById("cn-ref-mode")
                     ? document.getElementById("cn-ref-mode").value
-                    : "depth";
+                    : "openpose";
                 const refBody = {
                     ref_mode: refMode,
                     prompt: prompt,
@@ -313,7 +379,6 @@
                         document.getElementById("cn-cn-scale").value
                     ),
                     ip_adapter_scale: parseFloat(document.getElementById("cn-ip-scale").value),
-                    strength: parseFloat(document.getElementById("cn-strength").value),
                 };
                 if (enhancedPrompt) {
                     refBody.enhanced_prompt = enhancedPrompt;
@@ -374,9 +439,11 @@
                 speakCaption(prefix);
             }
         } catch (err) {
-            showToast("生成失败: " + err.message, "error");
+            showToast("生成失败: " + networkErrorHint(err.message), "error");
             if (placeholder) placeholder.style.display = "flex";
         } finally {
+            stopGenTicker();
+            document.title = origTitle;
             btn.disabled = false;
             setIndeterminateLoading(prefix, false);
         }
@@ -495,7 +562,7 @@
                 const hintEl = document.getElementById("cn-ref-hint");
                 if (hintEl) {
                     hintEl.textContent =
-                        "无法加载模式说明；仍可使用上方默认选项。Depth：场景深度；OpenPose：人物姿势；Lineart：线稿；SoftEdge：柔和边缘；Canny：硬边缘轮廓；IP-Adapter：风格参考；Img2Img：在参考图上重绘。";
+                        "无法加载模式说明；仍可使用上方默认选项。OpenPose：人物姿势；Lineart：线稿；SoftEdge：柔和边缘；Canny：硬边缘轮廓；IP-Adapter：风格参考。";
                 }
                 syncReferenceAdvancedControls();
             });

@@ -9,16 +9,16 @@ MEDIUM_MODELS = [
     "Salesforce/blip-image-captioning-large",
 ]
 
+# 不含 runwayml：SD1.5 底模与 reference_modes.json / get_controlnet 一致为 DreamShaper（Lykon/dreamshaper-8）
+SD21_BASE_SNAPSHOT = "sd2-community/stable-diffusion-2-1-base"
 LARGE_MODELS = [
-    "sd2-community/stable-diffusion-2-1-base",
-    "runwayml/stable-diffusion-v1-5",
+    SD21_BASE_SNAPSHOT,
     "lllyasviel/sd-controlnet-canny",
 ]
 
-# SD1.5 + 参考模式：按需任选子集；Annotators 供 Depth/OpenPose/HED/Lineart 预处理
+# SD1.5 + 参考模式：底模 + ControlNet×4 + Annotators（Annotators 供 OpenPose/HED/Lineart 预处理）
 REFERENCE_SNAPSHOTS = [
     "Lykon/dreamshaper-8",
-    "lllyasviel/sd-controlnet-depth",
     "lllyasviel/sd-controlnet-openpose",
     "lllyasviel/control_v11p_sd15_lineart",
     "lllyasviel/sd-controlnet-hed",
@@ -26,11 +26,14 @@ REFERENCE_SNAPSHOTS = [
     "lllyasviel/Annotators",
 ]
 
+# webapp 第二阶段 = REFERENCE 去掉底模（DreamShaper 已在阶段 1 随 SD15_STYLE_MODELS 下载）
+WEBAPP_REFERENCE_SNAPSHOTS = REFERENCE_SNAPSHOTS[1:]
+
 REFERENCE_SINGLE_FILES = [
     ("h94/IP-Adapter", "models/ip-adapter_sd15_light_v11.bin"),
 ]
 
-# SD1.5 风格：DreamShaper + 油画 LoRA 仓库（snapshot 整库）
+# SD1.5 风格：DreamShaper 与 REFERENCE_SNAPSHOTS 重复；--group all 时列表会去重，只 snapshot 一次
 SD15_STYLE_MODELS = [
     "Lykon/dreamshaper-8",
     "jqlive/sd15-digital-oil-arcane",
@@ -55,20 +58,26 @@ def _extend_unique(dest: list, items: list) -> None:
             dest.append(x)
 
 
-def webapp_model_ids() -> list[str]:
-    """文生图 + SD1.5 参考模式（含 controlnet-aux 用的 Annotators），不含可选二次元/DreamShaper 风格包。"""
+# webapp 阶段 1：仅 SD2.1 基座（与 LARGE_MODELS[0] 同一条，避免重复写 id）
+WEBAPP_LARGE_SNAPSHOTS = [SD21_BASE_SNAPSHOT]
+
+
+def webapp_core_model_ids() -> list[str]:
+    """文生图主路径：翻译/CLIP/BLIP + SD2.1 + SD1.5 画风相关 snapshot（含 DreamShaper）。"""
     out: list[str] = []
     _extend_unique(out, MEDIUM_MODELS)
-    _extend_unique(out, LARGE_MODELS)
-    _extend_unique(out, REFERENCE_SNAPSHOTS)
+    _extend_unique(out, WEBAPP_LARGE_SNAPSHOTS)
+    _extend_unique(out, SD15_STYLE_MODELS)
     return out
 
 
 def hf_download_env() -> dict[str, str]:
-    """Merge env for child Python: longer Hub timeouts (default 10s often fails on slow links)."""
+    """子进程环境：长超时；继承 HF_ENDPOINT（镜像）等。HTTP 层重试由库环境变量控制（非 snapshot_download 参数）。"""
     env = os.environ.copy()
     env.setdefault("HF_HUB_ETAG_TIMEOUT", "120")
     env.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "300")
+    # 部分 huggingface_hub 版本通过环境变量控制重试，而非 snapshot_download(max_retries=...)
+    env.setdefault("HF_HUB_DOWNLOAD_MAX_RETRIES", "15")
     return env
 
 
@@ -143,20 +152,60 @@ def main() -> int:
         choices=["medium", "large", "all", "sd15_styles", "reference", "webapp"],
         default="medium",
         help=(
-            "webapp: 推荐一键（medium+large+reference，含 Annotators 与 IP-Adapter 单文件）；"
-            "sd15_styles: AOM3A3、DreamShaper、水彩/素描 LoRA 等；"
-            "reference: 仅参考模式相关快照与 IP-Adapter 文件"
+            "webapp: 分两阶段——先 medium+SD2.1+sd15_styles（含 LoRA 单文件），再参考模式 ControlNet/Annotators/IP-Adapter；"
+            "sd15_styles: DreamShaper（与 reference 重复 id 时在 all 会去重）、油画 LoRA 库、单文件 LoRA；"
+            "reference: 参考模式快照与 IP-Adapter 单文件"
         ),
     )
     args = parser.parse_args()
 
+    _proj_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if not os.environ.get("HF_HOME"):
+        os.environ["HF_HOME"] = os.path.join(_proj_root, "huggingface")
+    print("HF_HOME:", os.environ["HF_HOME"], flush=True)
+
     token = os.getenv("HF_TOKEN") or None
     print("HF_TOKEN exists:", bool(token), flush=True)
 
-    models: list[str] = []
     if args.group == "webapp":
-        models = webapp_model_ids()
-    elif args.group in ("medium", "all"):
+        ok = 0
+        total = 0
+
+        print("\n" + "=" * 72, flush=True)
+        print(
+            "PHASE 1/2 — 核心与画风：翻译/CLIP/BLIP、SD2.1、SD1.5 画风 snapshot 与 LoRA 单文件",
+            flush=True,
+        )
+        print("=" * 72, flush=True)
+        for m in webapp_core_model_ids():
+            total += 1
+            if run_one(args.python, m, args.timeout, token):
+                ok += 1
+        for repo_id, fname in SD15_SINGLE_FILES:
+            total += 1
+            if run_one_file(args.python, repo_id, fname, args.timeout, token):
+                ok += 1
+
+        print("\n" + "=" * 72, flush=True)
+        print(
+            "PHASE 2/2 — 参考模式：ControlNet×4、Annotators、IP-Adapter 单文件（底模已在阶段 1）",
+            flush=True,
+        )
+        print("=" * 72, flush=True)
+        for m in WEBAPP_REFERENCE_SNAPSHOTS:
+            total += 1
+            if run_one(args.python, m, args.timeout, token):
+                ok += 1
+        for repo_id, fname in REFERENCE_SINGLE_FILES:
+            total += 1
+            if run_one_file(args.python, repo_id, fname, args.timeout, token):
+                ok += 1
+
+        print(f"\nSummary (webapp two-phase): {ok}/{total} success", flush=True)
+        return 0 if ok == total else 2
+
+    models: list[str] = []
+    if args.group in ("medium", "all"):
         models.extend(MEDIUM_MODELS)
     if args.group in ("large", "all"):
         for m in LARGE_MODELS:
@@ -183,7 +232,7 @@ def main() -> int:
             if run_one_file(args.python, repo_id, fname, args.timeout, token):
                 ok += 1
 
-    if args.group in ("reference", "all", "webapp"):
+    if args.group in ("reference", "all"):
         for repo_id, fname in REFERENCE_SINGLE_FILES:
             total += 1
             if run_one_file(args.python, repo_id, fname, args.timeout, token):

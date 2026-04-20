@@ -2,13 +2,6 @@
   "sd15_base": "Lykon/dreamshaper-8",
   "output_size": 768,
   "modes": {
-    "depth": {
-      "type": "controlnet",
-      "controlnet_repo": "lllyasviel/sd-controlnet-depth",
-      "preprocessor": "midas",
-      "label_zh": "Depth 深度",
-      "hint_zh": "适合场景、空间关系与前后景结构；上传照片即可，服务端会估计深度图。"
-    },
     "openpose": {
       "type": "controlnet",
       "controlnet_repo": "lllyasviel/sd-controlnet-openpose",
@@ -44,11 +37,6 @@
       "ip_adapter_weight": "ip-adapter_sd15_light_v11.bin",
       "label_zh": "IP-Adapter",
       "hint_zh": "整体风格/内容参考，不强调精确轮廓；上传任意 RGB 参考图。"
-    },
-    "img2img": {
-      "type": "img2img",
-      "label_zh": "Img2Img 图生图",
-      "hint_zh": "在参考图 latent 上重绘；用「重绘幅度」控制改动大小。"
     }
   }
 }

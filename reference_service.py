@@ -1,7 +1,7 @@
 """
 参考图生成（底模默认 DreamShaper / Lykon/dreamshaper-8，见 reference_modes.json 的 sd15_base）：
-按模式懒加载 ControlNet / IP-Adapter / Img2Img，互斥占用显存。
-预处理依赖 controlnet_aux（Depth/OpenPose/HED/Lineart）；Canny 为 OpenCV。
+按模式懒加载 ControlNet / IP-Adapter，互斥占用显存。
+预处理依赖 controlnet_aux（OpenPose/HED/Lineart）；Canny 为 OpenCV。
 """
 from __future__ import annotations
 
@@ -84,7 +84,6 @@ def load_reference_pipeline(
     from diffusers import (
         ControlNetModel,
         StableDiffusionControlNetPipeline,
-        StableDiffusionImg2ImgPipeline,
         StableDiffusionPipeline,
     )
 
@@ -165,25 +164,6 @@ def load_reference_pipeline(
         _reference_bundle = {"mode": mode, "type": mtype, "pipeline": pipe, "device": device}
         return _reference_bundle
 
-    if mtype == "img2img":
-
-        def load_i2i(lfo: bool):
-            return StableDiffusionImg2ImgPipeline.from_pretrained(
-                base,
-                torch_dtype=dtype,
-                safety_checker=None,
-                requires_safety_checker=False,
-                token=hf_token,
-                local_files_only=lfo,
-            )
-
-        pipe = _hf_local_first(load_i2i, f"SD1.5 Img2Img ({base})", local_files_only, allow_hub)
-        pipe = pipe.to(device)
-        if hasattr(pipe, "enable_vae_tiling"):
-            pipe.enable_vae_tiling()
-        _reference_bundle = {"mode": mode, "type": mtype, "pipeline": pipe, "device": device}
-        return _reference_bundle
-
     raise ValueError(f"Unknown reference mode type: {mtype}")
 
 
@@ -213,16 +193,14 @@ def _get_preprocessor(name: str):
     if name in _preprocessors:
         return _preprocessors[name]
     try:
-        from controlnet_aux import HEDdetector, MidasDetector, OpenposeDetector  # type: ignore
+        from controlnet_aux import HEDdetector, OpenposeDetector  # type: ignore
     except ImportError as e:
         raise RuntimeError(
-            "需要安装 controlnet-aux 以使用 Depth/OpenPose/HED/Lineart 预处理：pip install controlnet-aux"
+            "需要安装 controlnet-aux 以使用 OpenPose/HED/Lineart 预处理：pip install controlnet-aux"
         ) from e
 
     annot = "lllyasviel/Annotators"
-    if name == "midas":
-        _preprocessors[name] = MidasDetector.from_pretrained(annot)
-    elif name == "openpose":
+    if name == "openpose":
         _preprocessors[name] = OpenposeDetector.from_pretrained(annot)
     elif name == "hed":
         _preprocessors[name] = HEDdetector.from_pretrained(annot)
@@ -245,7 +223,7 @@ def preprocess_reference_image(mode: str, image: Image.Image) -> Image.Image:
     size = get_output_size()
     mc = get_mode_config(mode)
     mtype = mc["type"]
-    if mtype == "ip_adapter" or mtype == "img2img":
+    if mtype == "ip_adapter":
         out = image.convert("RGB")
         if out.size != (size, size):
             out = out.resize((size, size), Image.LANCZOS)

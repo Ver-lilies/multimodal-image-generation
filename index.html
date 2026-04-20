@@ -73,7 +73,7 @@
                             onclick="enhancePrompt('sd21')">扩充提示词（DeepSeek）</button>
                         <div id="sd21-enhance-loading" class="loading" style="display: none;">
                             <div class="spinner"></div>
-                            <p>正在扩充…</p>
+                            <p id="sd21-enhance-status">正在扩充…</p>
                         </div>
                         <div id="sd21-enhanced-section" style="display: none; margin-top: 14px;">
                             <div class="input-group">
@@ -161,7 +161,7 @@
                             onclick="enhancePrompt('cn')">扩充提示词</button>
                         <div id="cn-enhance-loading" class="loading" style="display: none;">
                             <div class="spinner"></div>
-                            <p>正在扩充…</p>
+                            <p id="cn-enhance-status">正在扩充…</p>
                         </div>
                         <div id="cn-enhanced-section" style="display: none; margin-top: 14px;">
                             <div class="input-group">
@@ -176,13 +176,11 @@
                         <div class="input-group" style="margin-bottom: 12px;">
                             <label class="field-label" for="cn-ref-mode">参考模式（单选）</label>
                             <select id="cn-ref-mode" class="ui-select" onchange="onReferenceModeChange()">
-                                <option value="depth">Depth 深度</option>
                                 <option value="openpose">OpenPose 姿势</option>
                                 <option value="lineart">Lineart 线稿</option>
                                 <option value="softedge">SoftEdge (HED)</option>
                                 <option value="canny">Canny 硬边缘</option>
                                 <option value="ip_adapter">IP-Adapter</option>
-                                <option value="img2img">Img2Img 图生图</option>
                             </select>
                             <p id="cn-ref-hint" class="hint-text" style="margin-top: 8px;">加载模式说明中…</p>
                         </div>
@@ -233,11 +231,6 @@
                                     <label class="field-label">IP-Adapter 强度 <span id="cn-ip-value">0.60</span></label>
                                     <input type="range" id="cn-ip-scale" min="0" max="1" value="0.6" step="0.05"
                                         oninput="document.getElementById('cn-ip-value').textContent = parseFloat(this.value).toFixed(2)">
-                                </div>
-                                <div class="slider-item" id="cn-strength-wrap" style="display: none;">
-                                    <label class="field-label">重绘幅度 (strength) <span id="cn-strength-value">0.55</span></label>
-                                    <input type="range" id="cn-strength" min="0.15" max="0.95" value="0.55" step="0.05"
-                                        oninput="document.getElementById('cn-strength-value').textContent = parseFloat(this.value).toFixed(2)">
                                 </div>
                             </div>
                         </details>

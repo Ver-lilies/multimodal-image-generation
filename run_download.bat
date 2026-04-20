@@ -1,8 +1,11 @@
 @echo off
+chcp 65001 >nul 2>&1
 setlocal EnableExtensions
 cd /d "%~dp0"
 
-REM 依赖安装与 install_deps.bat 完全相同，本脚本只多一步：下载 Hugging Face 模型（webapp 分组）
+REM Default HF_HOME: project\huggingface (override with env or .env)
+if not defined HF_HOME set "HF_HOME=%~dp0huggingface"
+
 call "%~dp0install_deps.bat"
 if errorlevel 1 (
   pause
@@ -18,8 +21,11 @@ if exist "%~dp0..\.venv-gpu\Scripts\python.exe" (
 )
 
 echo.
-echo === Hugging Face 模型 ^(group webapp^) ===
-echo 需 .env 中 HF_TOKEN；体积大、耗时长，请耐心等待。
+echo === Hugging Face models (group webapp, two phases) ===
+echo Cache: %HF_HOME%
+echo Set HF_TOKEN in .env. Large repos may take hours. Re-run to resume. Per-repo timeout 6h.
+echo Order: 1^) Core + SD2.1 + SD1.5 style packs  2^) Reference-mode ControlNets + Annotators + IP-Adapter
 echo.
-"%PY%" scripts\download_models_stepwise.py --python "%PY%" --group webapp --timeout 7200
+
+"%PY%" scripts\download_models_stepwise.py --python "%PY%" --group webapp --timeout 21600
 pause

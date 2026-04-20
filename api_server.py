@@ -15,21 +15,32 @@ from fastapi import Response
 from pydantic import BaseModel
 import uvicorn
 import threading
+import socket
+
+_PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+
+    load_dotenv(os.path.join(_PROJECT_DIR, ".env"))
 except ImportError:
     pass
+
+# Hugging Face 缓存：默认「项目根/huggingface」，与 run_download.bat 一致；若要用系统默认 ~/.cache/huggingface，请在 .env 中设置 HF_HOME
+if not os.environ.get("HF_HOME"):
+    os.environ["HF_HOME"] = os.path.join(_PROJECT_DIR, "huggingface")
 
 import reference_service
 
 # Windows 默认控制台常为 GBK，emoji 会导致 UnicodeEncodeError，进程在绑定端口前退出
 for _stream in (sys.stdout, sys.stderr):
     try:
-        _stream.reconfigure(encoding="utf-8", errors="replace")
+        _stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
     except Exception:
-        pass
+        try:
+            _stream.reconfigure(line_buffering=True)
+        except Exception:
+            pass
 
 HF_TOKEN = os.getenv('HF_TOKEN', '')
 DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY', '')
@@ -46,6 +57,7 @@ if not DEEPSEEK_API_KEY:
 print(f"🔐 API Keys loaded: HF_TOKEN={'✓' if HF_TOKEN else '✗'}, DEEPSEEK={'✓' if DEEPSEEK_API_KEY else '✗'}")
 print(f"📁 LOCAL_FILES_ONLY: {LOCAL_FILES_ONLY}")
 print(f"🌐 ALLOW_HF_HUB_DOWNLOAD: {ALLOW_HF_HUB_DOWNLOAD}")
+print(f"📂 HF_HOME: {os.environ.get('HF_HOME', '')}")
 
 app = FastAPI(title="Multimodal API")
 
@@ -63,7 +75,6 @@ translator = None
 clip_alignment = None
 controlnet = None
 
-_PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(_PROJECT_DIR, "style_models.json"), encoding="utf-8") as _style_file:
     STYLE_CONFIG = json.load(_style_file)
 
@@ -89,6 +100,25 @@ def _hf_local_first(load, desc: str):
                 "ALLOW_HF_HUB_DOWNLOAD=true (requires a working connection to huggingface.co)."
             ) from e
         return load(False)
+
+
+def _make_denoise_console_callback(total_steps: int):
+    """每步打印一行进度。线程池里 tqdm 常不刷新；显式 print+flush 更可靠。"""
+
+    def callback_on_step_end(pipe, step_index: int, timestep, callback_kwargs: dict):
+        try:
+            if hasattr(timestep, "item"):
+                t_val = int(timestep.item())
+            else:
+                t_val = int(timestep)
+        except (TypeError, ValueError):
+            t_val = timestep
+        n = max(1, int(total_steps))
+        i1 = step_index + 1
+        print(f"  [denoise {min(i1, n)}/{n}] timestep={t_val}", flush=True)
+        return {}
+
+    return callback_on_step_end
 
 
 class GenerateRequest(BaseModel):
@@ -121,7 +151,6 @@ class ReferenceGenerateRequest(BaseModel):
     guidance_scale: float = 10.0
     controlnet_conditioning_scale: float = 1.0
     ip_adapter_scale: float = 0.6
-    strength: float = 0.55
     enhanced_prompt: str | None = None
 
 class EnhanceRequest(BaseModel):
@@ -386,11 +415,14 @@ def get_controlnet():
             "lllyasviel/sd-controlnet-canny",
         )
 
-        print("Loading SD 1.5 base model...")
+        base_sd15 = reference_service.load_reference_config().get(
+            "sd15_base", "Lykon/dreamshaper-8"
+        )
+        print(f"Loading SD1.5 base ({base_sd15}) for legacy ControlNet…")
         cn = controlnet
         pipe = _hf_local_first(
             lambda lfo: StableDiffusionControlNetPipeline.from_pretrained(
-                "runwayml/stable-diffusion-v1-5",
+                base_sd15,
                 controlnet=cn,
                 torch_dtype=torch.float16 if device == "cuda" else torch.float32,
                 safety_checker=None,
@@ -398,7 +430,7 @@ def get_controlnet():
                 token=HF_TOKEN,
                 local_files_only=lfo,
             ),
-            "runwayml/stable-diffusion-v1-5 (ControlNet pipeline)",
+            f"{base_sd15} (ControlNet pipeline)",
         )
         pipe = pipe.to(device)
         
@@ -726,7 +758,7 @@ def reference_modes_public():
 
 @app.post("/process-reference")
 async def process_reference_image_api(ref_mode: str = Form(...), file: UploadFile = File(...)):
-    """按 ref_mode 做预处理（Depth/OpenPose 等），不加载 SD 权重。"""
+    """按 ref_mode 做预处理（OpenPose/HED 等），不加载 SD 权重。"""
     try:
         reference_service.get_mode_config(ref_mode)
     except KeyError:
@@ -860,6 +892,11 @@ def generate_image(req: GenerateRequest):
         else:
             pipe = get_generator()
 
+        print(
+            f"\n[/generate] mode={mode} steps={num_steps} guidance={guidance}",
+            flush=True,
+        )
+        _step_cb = _make_denoise_console_callback(num_steps)
         with torch.inference_mode():
             if mode == "sd21":
                 image = pipe(
@@ -869,6 +906,7 @@ def generate_image(req: GenerateRequest):
                     height=768,
                     width=768,
                     enable_vae_tiling=True,
+                    callback_on_step_end=_step_cb,
                 ).images[0]
             else:
                 sd_kwargs = dict(
@@ -876,6 +914,7 @@ def generate_image(req: GenerateRequest):
                     guidance_scale=guidance,
                     height=sd15_h,
                     width=sd15_h,
+                    callback_on_step_end=_step_cb,
                 )
                 if st == "anime":
                     acfg = _anime_checkpoint_config()
@@ -953,6 +992,11 @@ async def generate_with_controlnet(req: ControlNetGenerateRequest):
         else:
             translated = translate_to_english(req.prompt)
         
+        print(
+            f"\n[/generate-controlnet] steps={req.num_inference_steps} guidance={req.guidance_scale}",
+            flush=True,
+        )
+        _step_cb = _make_denoise_console_callback(req.num_inference_steps)
         with torch.inference_mode():
             image = pipe(
                 translated,
@@ -962,6 +1006,7 @@ async def generate_with_controlnet(req: ControlNetGenerateRequest):
                 controlnet_conditioning_scale=req.controlnet_conditioning_scale,
                 height=768,
                 width=768,
+                callback_on_step_end=_step_cb,
             ).images[0]
         
         img_buffer = io.BytesIO()
@@ -1022,6 +1067,11 @@ def generate_reference_api(req: ReferenceGenerateRequest):
         mc = reference_service.get_mode_config(req.ref_mode)
         mtype = mc["type"]
 
+        print(
+            f"\n[/generate-reference] ref_mode={req.ref_mode} type={mtype} steps={req.num_inference_steps}",
+            flush=True,
+        )
+        _step_cb = _make_denoise_console_callback(req.num_inference_steps)
         with torch.inference_mode():
             if mtype == "controlnet":
                 out_img = pipe(
@@ -1032,6 +1082,7 @@ def generate_reference_api(req: ReferenceGenerateRequest):
                     controlnet_conditioning_scale=req.controlnet_conditioning_scale,
                     height=size,
                     width=size,
+                    callback_on_step_end=_step_cb,
                 ).images[0]
             elif mtype == "ip_adapter":
                 try:
@@ -1046,6 +1097,7 @@ def generate_reference_api(req: ReferenceGenerateRequest):
                         guidance_scale=req.guidance_scale,
                         height=size,
                         width=size,
+                        callback_on_step_end=_step_cb,
                     ).images[0]
                 except TypeError:
                     out_img = pipe(
@@ -1055,15 +1107,8 @@ def generate_reference_api(req: ReferenceGenerateRequest):
                         guidance_scale=req.guidance_scale,
                         height=size,
                         width=size,
+                        callback_on_step_end=_step_cb,
                     ).images[0]
-            elif mtype == "img2img":
-                out_img = pipe(
-                    translated,
-                    image=pil,
-                    strength=float(req.strength),
-                    num_inference_steps=req.num_inference_steps,
-                    guidance_scale=req.guidance_scale,
-                ).images[0]
             else:
                 raise HTTPException(status_code=500, detail=f"未知模式类型: {mtype}")
 
@@ -1097,6 +1142,51 @@ def generate_reference_api(req: ReferenceGenerateRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _pick_bindable_port(preferred: int, span: int = 48) -> int:
+    """若首选端口被占用（如 Windows Errno 10048），自动尝试后续端口。"""
+    for port in range(preferred, preferred + span):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("0.0.0.0", port))
+        except OSError:
+            continue
+        finally:
+            s.close()
+        return port
+    raise RuntimeError(
+        f"无法在 {preferred}–{preferred + span - 1} 绑定端口；请关闭占用进程或修改 PORT。"
+    )
+
+
 if __name__ == "__main__":
-    print("Starting FastAPI server on http://localhost:8000")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    _preferred = int(os.getenv("PORT", "8000"))
+    _port = _pick_bindable_port(_preferred)
+    if _port != _preferred:
+        print(
+            f"⚠ 端口 {_preferred} 已被占用，已改用 {_port}（可在 .env 设置 PORT 固定首选）",
+            flush=True,
+        )
+    os.environ["PORT"] = str(_port)
+    _url = f"http://127.0.0.1:{_port}"
+    print(f"Starting FastAPI server on {_url}", flush=True)
+
+    _open_browser = os.getenv("OPEN_BROWSER", "1").strip().lower() not in ("0", "false", "no", "off")
+    if _open_browser:
+        import webbrowser
+
+        def _open_when_ready():
+            import time
+
+            time.sleep(1.2)
+            webbrowser.open(_url)
+
+        threading.Thread(target=_open_when_ready, daemon=True).start()
+
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=_port,
+        log_level="info",
+        access_log=True,
+    )
